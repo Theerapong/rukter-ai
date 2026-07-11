@@ -198,6 +198,43 @@ test('keeps an unlisted AMD Developer Cloud entitlement requestable', async () =
   assert.match(capacity.reason, /create request/i)
 })
 
+test('retries Developer Cloud capacity across size aliases and regions', async () => {
+  const createRequests = []
+  const fetchImpl = async (url, options = {}) => {
+    if (url.includes('/droplets?')) return json({ droplets: [] })
+    if (url.includes('/sizes?')) return json({ sizes: [] })
+    if (url.includes('/account/keys')) return json({ ssh_keys: [{ name: 'rukter-key', fingerprint: 'aa:bb' }] })
+    if (url.endsWith('/v2/droplets') && options.method === 'POST') {
+      const payload = JSON.parse(options.body)
+      createRequests.push(payload)
+      if (payload.region === 'nyc2' && payload.size === 'gpu-mi300x1-192gb-devcloud') {
+        return json({ droplet: { id: 789, created_at: createdAt } }, 202)
+      }
+      return json({ message: 'This size is unavailable.' }, 422)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    workerToken: 'control-token',
+    publicUrl: 'https://rukter.ai',
+    sshKeyName: 'rukter-key',
+    fetchImpl,
+  })
+  const lease = await orchestrator.startLease()
+  assert.equal(lease.id, '789')
+  assert.equal(lease.region, 'nyc2')
+  assert.equal(lease.size, 'gpu-mi300x1-192gb-devcloud')
+  assert.deepEqual(
+    createRequests.map(({ region, size: requestSize }) => `${region}/${requestSize}`),
+    [
+      'atl1/gpu-mi300x1-192gb-devcloud',
+      'atl1/gpu-mi300x1-192gb',
+      'nyc2/gpu-mi300x1-192gb-devcloud',
+    ],
+  )
+})
+
 test('adopts an existing portal-created MI300X lease without creating another Droplet', async () => {
   const requests = []
   const createdAt = '2026-07-11T20:16:05Z'

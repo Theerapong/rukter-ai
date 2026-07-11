@@ -210,7 +210,7 @@ The browser polls this job API, so a cinematic generation can take longer than t
 The production service contains the lease controller described in `infra/amd-gpu-orchestrator/README.md`. Configure its scoped DigitalOcean token and worker token before enabling AMD Cinematic:
 
 ```bash
-export AMD_GPU_ORCHESTRATOR_URL="https://rukter.ai"
+export AMD_GPU_ORCHESTRATOR_URL="http://127.0.0.1:3017"
 export AMD_GPU_ORCHESTRATOR_TOKEN="..."
 export AMD_GPU_DIGITALOCEAN_TOKEN="..."
 export AMD_GPU_REGION="atl1"

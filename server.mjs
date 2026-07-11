@@ -1976,7 +1976,7 @@ function storyGpuEnabled() {
 }
 
 function storyOrchestratorUrl() {
-  return String(process.env.AMD_GPU_ORCHESTRATOR_URL || amdGpuPublicUrl).replace(/\/$/, '')
+  return String(process.env.AMD_GPU_ORCHESTRATOR_URL || `http://127.0.0.1:${port}`).replace(/\/$/, '')
 }
 
 function pruneStoryJobs() {

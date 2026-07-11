@@ -158,7 +158,7 @@ terraform:plan:digitalocean:
     - export TF_VAR_rukter_mcp_access_token="${RUKTER_MCP_ACCESS_TOKEN:-}"
     - export TF_VAR_amd_3d_worker_url="${AMD_3D_WORKER_URL:-}"
     - export TF_VAR_amd_3d_worker_token="${AMD_3D_WORKER_TOKEN:-}"
-    - export TF_VAR_amd_gpu_orchestrator_url="${AMD_GPU_ORCHESTRATOR_URL:-https://rukter.ai}"
+    - export TF_VAR_amd_gpu_orchestrator_url="${AMD_GPU_ORCHESTRATOR_URL:-http://127.0.0.1:3017}"
     - export TF_VAR_amd_gpu_orchestrator_token="${AMD_GPU_ORCHESTRATOR_TOKEN:-}"
     - export TF_VAR_amd_gpu_digitalocean_token="${AMD_GPU_DIGITALOCEAN_TOKEN:-}"
     - export TF_VAR_amd_gpu_region="${AMD_GPU_REGION:-atl1}"

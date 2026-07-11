@@ -161,7 +161,11 @@ test('adopts an existing portal-created MI300X lease without creating another Dr
     if (url.includes('/droplets?')) return json({ droplets: [existing] })
     throw new Error(`Unexpected request: ${url}`)
   }
-  const orchestrator = createDigitalOceanGpuOrchestrator({ token: 'do-token', fetchImpl })
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    fetchImpl,
+    now: () => new Date('2026-07-11T20:20:00Z').getTime(),
+  })
   const capacity = await orchestrator.checkCapacity({ refresh: true })
   assert.equal(capacity.available, true)
   assert.equal(capacity.existingLease, true)

@@ -37,12 +37,12 @@ node:smoke:
     - node --check public/app.js
     - node --check scripts/smoke.mjs
     - python3 -m py_compile amd-worker/app.py amd-worker/run_story_pipeline.py
+    - unset FIREWORKS_API_KEY DIGITALOCEAN_TOKEN AMD_GPU_DIGITALOCEAN_TOKEN AMD_GPU_PUBLIC_ENABLED AMD_GPU_ORCHESTRATOR_URL
     - npm test
     - grep -Fq 'COPY amd-worker ./amd-worker' Dockerfile
     - export PORT="$((33000 + (CI_JOB_ID % 2000)))"
     - export SMOKE_BASE_URL="http://127.0.0.1:${PORT}"
     - export STARTUP_STARTED_AT="$(node -e 'console.log(Date.now())')"
-    - unset FIREWORKS_API_KEY AMD_GPU_DIGITALOCEAN_TOKEN AMD_GPU_PUBLIC_ENABLED AMD_GPU_ORCHESTRATOR_URL
     - mkdir -p .ci-artifacts
     - node server.mjs > .ci-artifacts/server.log 2>&1 &
     - export SERVER_PID=$!

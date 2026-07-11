@@ -38,7 +38,7 @@ test('validates an AMD GPU lease request without creating a billed Droplet', asy
   })
   const result = await orchestrator.startLease({ dryRun: true })
   assert.equal(result.status, 'validated')
-  assert.equal(result.size, 'gpu-mi300x1-192gb')
+  assert.equal(result.size, 'gpu-mi300x1-192gb-devcloud')
   assert.equal(result.image, 'gpu-amd-base')
   assert.ok(!requests.some((request) => request.method === 'POST'))
 })
@@ -49,7 +49,7 @@ test('creates, verifies, and destroys one MI300X lease', async () => {
     requests.push({ url, method: options.method || 'GET', body: options.body })
     if (url.includes('/account/keys')) return json({ ssh_keys: [{ name: 'rukter-key', fingerprint: 'aa:bb' }] })
     if (url.includes('/droplets?')) return json({ droplets: [] })
-    if (url.includes('/sizes?')) return json({ sizes: [{ slug: 'gpu-mi300x1-192gb', available: true, regions: ['atl1'] }] })
+    if (url.includes('/sizes?')) return json({ sizes: [{ slug: 'gpu-mi300x1-192gb-devcloud', available: true, regions: ['atl1'] }] })
     if (url.endsWith('/v2/droplets') && options.method === 'POST') {
       return json({ droplet: { id: 123, created_at: createdAt } }, 202)
     }
@@ -77,7 +77,7 @@ test('creates, verifies, and destroys one MI300X lease', async () => {
   assert.equal(ready.gpuDevice, 'AMD Instinct MI300X')
   await orchestrator.releaseLease(started.id)
   const createPayload = JSON.parse(requests.find((request) => request.method === 'POST').body)
-  assert.equal(createPayload.size, 'gpu-mi300x1-192gb')
+  assert.equal(createPayload.size, 'gpu-mi300x1-192gb-devcloud')
   assert.equal(createPayload.region, 'atl1')
   assert.equal(createPayload.image, 'gpu-amd-base')
   assert.deepEqual(createPayload.tags, ['rukter-product-story-ephemeral'])
@@ -113,7 +113,12 @@ test('checks live MI300X capacity without creating a Droplet', async () => {
     if (url.includes('/sizes?')) return json({ sizes: [{ slug: 'gpu-mi300x1-192gb', available: true, regions: ['atl1'] }] })
     throw new Error(`Unexpected request: ${url}`)
   }
-  const orchestrator = createDigitalOceanGpuOrchestrator({ token: 'do-token', region: 'atl1', fetchImpl })
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    region: 'atl1',
+    size: 'gpu-mi300x1-192gb',
+    fetchImpl,
+  })
   const capacity = await orchestrator.checkCapacity({ refresh: true })
   assert.equal(capacity.available, true)
   assert.equal(capacity.state, 'available')
@@ -127,7 +132,12 @@ test('selects another live AMD region when the configured region is full', async
     if (url.includes('/sizes?')) return json({ sizes: [{ slug: 'gpu-mi300x1-192gb', available: true, regions: ['nyc2'] }] })
     throw new Error(`Unexpected request: ${url}`)
   }
-  const orchestrator = createDigitalOceanGpuOrchestrator({ token: 'do-token', region: 'atl1', fetchImpl })
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    region: 'atl1',
+    size: 'gpu-mi300x1-192gb',
+    fetchImpl,
+  })
   const capacity = await orchestrator.checkCapacity({ refresh: true })
   assert.equal(capacity.available, true)
   assert.equal(capacity.region, 'nyc2')
@@ -140,10 +150,34 @@ test('reports no MI300X capacity without starting billing', async () => {
     if (url.includes('/sizes?')) return json({ sizes: [{ slug: 'gpu-mi300x1-192gb', available: true, regions: [] }] })
     throw new Error(`Unexpected request: ${url}`)
   }
-  const orchestrator = createDigitalOceanGpuOrchestrator({ token: 'do-token', region: 'atl1', fetchImpl })
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    region: 'atl1',
+    size: 'gpu-mi300x1-192gb',
+    fetchImpl,
+  })
   const capacity = await orchestrator.checkCapacity({ refresh: true })
   assert.equal(capacity.available, false)
   assert.match(capacity.reason, /no MI300X capacity/i)
+})
+
+test('keeps an unlisted AMD Developer Cloud entitlement requestable', async () => {
+  const fetchImpl = async (url) => {
+    if (url.includes('/droplets?')) return json({ droplets: [] })
+    if (url.includes('/sizes?')) return json({ sizes: [] })
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    region: 'atl1',
+    size: 'gpu-mi300x1-192gb-devcloud',
+    fetchImpl,
+  })
+  const capacity = await orchestrator.checkCapacity({ refresh: true })
+  assert.equal(capacity.available, true)
+  assert.equal(capacity.state, 'requestable')
+  assert.equal(capacity.capacitySource, 'developer_cloud_entitlement')
+  assert.match(capacity.reason, /create request/i)
 })
 
 test('adopts an existing portal-created MI300X lease without creating another Droplet', async () => {

@@ -2,7 +2,7 @@
 
 Rukter.ai's existing App Platform service is the always-on control plane; no second control service or idle GPU is required. Its protected API contract is:
 
-- `POST /v1/leases`: create one `gpu-mi300x1-192gb` Droplet from the `gpu-amd-base` image and return a provisioning lease in under 30 seconds.
+- `POST /v1/leases`: create one `gpu-mi300x1-192gb-devcloud` Droplet from the `gpu-amd-base` image and return a provisioning lease in under 30 seconds.
 - `GET /v1/leases/:id`: report Droplet startup, worker bootstrap, ROCm proof, and the ready worker URL.
 - `POST /v1/leases/:id/release`: destroy the Droplet. Powering it off is not sufficient to stop billing.
 - Every lease has a 50-minute hard TTL. A one-minute reaper destroys expired tagged Droplets even if the web request or worker fails.
@@ -19,7 +19,7 @@ Required safeguards:
 The AMD size and image are configurable because access and regional availability vary:
 
 ```text
-AMD_GPU_SIZE=gpu-mi300x1-192gb
+AMD_GPU_SIZE=gpu-mi300x1-192gb-devcloud
 AMD_GPU_IMAGE=gpu-amd-base
 AMD_GPU_REGION=atl1
 AMD_GPU_LEASE_TTL_SECONDS=3000

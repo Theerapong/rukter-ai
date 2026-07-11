@@ -74,7 +74,7 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       workerToken: process.env.AMD_GPU_ORCHESTRATOR_TOKEN || '',
       publicUrl: amdGpuPublicUrl,
       region: process.env.AMD_GPU_REGION || 'atl1',
-      size: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb',
+      size: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb-devcloud',
       image: process.env.AMD_GPU_IMAGE || 'gpu-amd-base',
       sshKeyFingerprint: process.env.AMD_GPU_SSH_KEY_FINGERPRINT || '',
       sshKeyName: process.env.AMD_GPU_SSH_KEY_NAME || '',
@@ -3251,7 +3251,7 @@ const server = http.createServer(async (req, res) => {
       amdStoryOrchestratorConfigured: Boolean(gpuLeaseOrchestrator),
       amdGpuPublicEnabled: storyGpuEnabled(),
       amdGpuRegion: process.env.AMD_GPU_REGION || 'atl1',
-      amdGpuSize: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb',
+      amdGpuSize: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb-devcloud',
       amdGpuLeaseTtlSeconds: gpuLeaseOrchestrator?.leaseTtlSeconds || 3000,
       amdGpuCapacityState: process.env.AMD_GPU_CAPACITY_STATE || 'unknown',
       amdGpuAvailabilityReason: process.env.AMD_GPU_AVAILABILITY_REASON || '',
@@ -3287,7 +3287,7 @@ const server = http.createServer(async (req, res) => {
       return
     }
     try {
-      const capacity = await gpuLeaseOrchestrator.checkCapacity()
+      const capacity = await gpuLeaseOrchestrator.checkCapacity({ refresh: url.searchParams.get('refresh') === '1' })
       sendJson(res, 200, { ...capacity, publicEnabled: storyGpuEnabled(), billing: 'inactive' })
     } catch (error) {
       sendJson(res, 503, {

@@ -108,7 +108,7 @@ variable "amd_gpu_region" {
 variable "amd_gpu_size" {
   type        = string
   description = "Single-GPU AMD Developer Cloud size slug."
-  default     = "gpu-mi300x1-192gb"
+  default     = "gpu-mi300x1-192gb-devcloud"
 }
 
 variable "amd_gpu_capacity_state" {

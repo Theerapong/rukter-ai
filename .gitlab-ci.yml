@@ -1,0 +1,215 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+default:
+  tags:
+    - mac-mini-runner
+
+stages:
+  - test
+  - package
+  - deploy
+  - verify
+
+variables:
+  DOCKER_BUILDKIT: "1"
+  DOCR_REGION: "sgp1"
+  DOCR_REGISTRY_NAME: "rukter-ai"
+  DOCR_REPOSITORY_NAME: "rukter-ai-launch-agent"
+  DOCR_SUBSCRIPTION_TIER: "starter"
+  PUBLIC_CONTAINER_IMAGE: "ghcr.io/theerapong/rukter-ai:latest"
+  PORT: "3017"
+  SMOKE_BASE_URL: "http://127.0.0.1:3017"
+  TF_DO_ENV_DIR: "${CI_PROJECT_DIR}/infra/terraform/environments/digitalocean"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_CLI_ARGS: "-no-color"
+
+node:smoke:
+  stage: test
+  script:
+    - node --version
+    - npm ci --no-audit --no-fund
+    - node --check server.mjs
+    - node --check public/app.js
+    - node --check scripts/smoke.mjs
+    - python3 -m py_compile amd-worker/app.py amd-worker/run_story_pipeline.py
+    - npm test
+    - grep -Fq 'COPY amd-worker ./amd-worker' Dockerfile
+    - export PORT="$((33000 + (CI_JOB_ID % 2000)))"
+    - export SMOKE_BASE_URL="http://127.0.0.1:${PORT}"
+    - export STARTUP_STARTED_AT="$(node -e 'console.log(Date.now())')"
+    - unset FIREWORKS_API_KEY AMD_GPU_DIGITALOCEAN_TOKEN AMD_GPU_PUBLIC_ENABLED AMD_GPU_ORCHESTRATOR_URL
+    - mkdir -p .ci-artifacts
+    - node server.mjs > .ci-artifacts/server.log 2>&1 &
+    - export SERVER_PID=$!
+    - trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+    - |
+      ready=0
+      for attempt in $(seq 1 30); do
+        if curl -fsS "${SMOKE_BASE_URL}/health" >/dev/null; then
+          ready=1
+          break
+        fi
+        sleep 1
+      done
+      test "${ready}" = "1"
+      STARTUP_MS="$(node -e 'console.log(Date.now() - Number(process.env.STARTUP_STARTED_AT))')"
+      echo "Container-ready contract: ${STARTUP_MS}ms / 60000ms"
+      test "${STARTUP_MS}" -lt 60000
+    - curl -fsS "${SMOKE_BASE_URL}/amd-worker/bootstrap.sh" | grep -Fq '#!/usr/bin/env bash'
+    - npm run smoke
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - .ci-artifacts/server.log
+
+docker:amd64-build:
+  stage: package
+  services: []
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - docker version
+    - docker buildx create --use --name rukter-ai-ci-builder || docker buildx use rukter-ai-ci-builder
+    - docker buildx build --platform linux/amd64 -t "rukter-ai:${CI_COMMIT_SHORT_SHA:-ci}" --load .
+    - export IMAGE_PLATFORM="$(docker image inspect "rukter-ai:${CI_COMMIT_SHORT_SHA:-ci}" --format '{{.Architecture}}/{{.Os}}')"
+    - |
+      echo "Image platform contract: ${IMAGE_PLATFORM}"
+    - test "${IMAGE_PLATFORM}" = "amd64/linux"
+
+build:docr:digitalocean:
+  stage: package
+  services: []
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  needs:
+    - node:smoke
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - test -n "${DIGITALOCEAN_TOKEN:-}"
+    - docker version
+    - |
+      DO_API="https://api.digitalocean.com/v2"
+      REGISTRIES_JSON="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "${DO_API}/registries")"
+      REGISTRY_NAME="$(printf '%s' "${REGISTRIES_JSON}" | jq -r --arg name "${DOCR_REGISTRY_NAME}" '.registries[]? | select(.name == $name) | .name' | head -n 1)"
+      if [ -z "${REGISTRY_NAME}" ]; then
+        REGISTRY_NAME="$(printf '%s' "${REGISTRIES_JSON}" | jq -r '.registries[0].name // empty')"
+      fi
+      test -n "${REGISTRY_NAME}"
+      ACCOUNT_EMAIL="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "${DO_API}/account" | jq -r '.account.email // empty')"
+      test -n "${ACCOUNT_EMAIL}"
+      export DOCR_REGISTRY_NAME="${REGISTRY_NAME}"
+      export DOCR_IMAGE_TAG="${CI_COMMIT_SHORT_SHA}-${CI_PIPELINE_IID}"
+      export DOCR_IMAGE_URI="registry.digitalocean.com/${DOCR_REGISTRY_NAME}/${DOCR_REPOSITORY_NAME}:${DOCR_IMAGE_TAG}"
+      printf '%s' "${DIGITALOCEAN_TOKEN}" | docker login registry.digitalocean.com --username "${ACCOUNT_EMAIL}" --password-stdin
+    - docker buildx create --use --name rukter-ai-docr-builder || docker buildx use rukter-ai-docr-builder
+    - docker buildx build --platform linux/amd64 --push -t "${DOCR_IMAGE_URI}" .
+    - docker buildx imagetools inspect "${DOCR_IMAGE_URI}"
+    - printf 'DOCR_REGISTRY_NAME=%s\nDOCR_REPOSITORY_NAME=%s\nDOCR_IMAGE_TAG=%s\nDOCR_IMAGE_URI=%s\n' "${DOCR_REGISTRY_NAME}" "${DOCR_REPOSITORY_NAME}" "${DOCR_IMAGE_TAG}" "${DOCR_IMAGE_URI}" > digitalocean-build.env
+  artifacts:
+    reports:
+      dotenv: digitalocean-build.env
+
+terraform:validate:digitalocean:
+  stage: deploy
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - terraform -chdir="${TF_DO_ENV_DIR}" init -backend=false -input=false
+    - terraform -chdir="${TF_DO_ENV_DIR}" fmt -check -recursive
+    - terraform -chdir="${TF_DO_ENV_DIR}" validate
+
+terraform:plan:digitalocean:
+  stage: deploy
+  resource_group: rukter-ai-terraform-digitalocean
+  needs:
+    - job: build:docr:digitalocean
+      artifacts: true
+    - terraform:validate:digitalocean
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - test -n "${DIGITALOCEAN_TOKEN:-}"
+    - terraform -chdir="${TF_DO_ENV_DIR}" init -input=false
+    - export TF_VAR_image_repository="${DOCR_REPOSITORY_NAME}"
+    - export TF_VAR_image_tag="${DOCR_IMAGE_TAG}"
+    - export TF_VAR_app_commit_sha="${CI_COMMIT_SHA}"
+    - export TF_VAR_deploy_timestamp="${DOCR_IMAGE_TAG}"
+    - export TF_VAR_fireworks_api_key="${FIREWORKS_API_KEY:-}"
+    - export TF_VAR_rukter_mcp_access_token="${RUKTER_MCP_ACCESS_TOKEN:-}"
+    - export TF_VAR_amd_3d_worker_url="${AMD_3D_WORKER_URL:-}"
+    - export TF_VAR_amd_3d_worker_token="${AMD_3D_WORKER_TOKEN:-}"
+    - export TF_VAR_amd_gpu_orchestrator_url="${AMD_GPU_ORCHESTRATOR_URL:-https://rukter.ai}"
+    - export TF_VAR_amd_gpu_orchestrator_token="${AMD_GPU_ORCHESTRATOR_TOKEN:-}"
+    - export TF_VAR_amd_gpu_digitalocean_token="${AMD_GPU_DIGITALOCEAN_TOKEN:-}"
+    - export TF_VAR_amd_gpu_region="${AMD_GPU_REGION:-atl1}"
+    - export TF_VAR_amd_gpu_size="${AMD_GPU_SIZE:-gpu-mi300x1-192gb}"
+    - export TF_VAR_amd_gpu_image="${AMD_GPU_IMAGE:-gpu-amd-base}"
+    - export TF_VAR_amd_gpu_ssh_key_fingerprint="${AMD_GPU_SSH_KEY_FINGERPRINT:-}"
+    - export TF_VAR_amd_gpu_ssh_key_name="${AMD_GPU_SSH_KEY_NAME:-}"
+    - export TF_VAR_amd_gpu_lease_ttl_seconds="${AMD_GPU_LEASE_TTL_SECONDS:-3000}"
+    - export TF_VAR_amd_gpu_worker_source_base_url="${AMD_GPU_WORKER_SOURCE_BASE_URL:-https://rukter.ai/amd-worker}"
+    - export TF_VAR_amd_gpu_capacity_state="${AMD_GPU_CAPACITY_STATE:-unavailable}"
+    - export TF_VAR_amd_gpu_availability_reason="${AMD_GPU_AVAILABILITY_REASON:-AMD Developer Cloud capacity is checked live before each job.}"
+    - export TF_VAR_amd_gpu_public_enabled="${AMD_GPU_PUBLIC_ENABLED:-false}"
+    - terraform -chdir="${TF_DO_ENV_DIR}" plan -parallelism=20 -out=tfplan
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - infra/terraform/environments/digitalocean/tfplan
+
+terraform:apply:digitalocean:
+  stage: deploy
+  interruptible: false
+  resource_group: rukter-ai-terraform-digitalocean
+  needs:
+    - terraform:plan:digitalocean
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  script:
+    - terraform -chdir="${TF_DO_ENV_DIR}" init -input=false
+    - terraform -chdir="${TF_DO_ENV_DIR}" apply -parallelism=20 -auto-approve tfplan
+    - terraform -chdir="${TF_DO_ENV_DIR}" output
+  environment:
+    name: production/rukter-ai
+    url: https://rukter.ai
+
+verify:rukter-ai:digitalocean:
+  stage: verify
+  needs:
+    - terraform:apply:digitalocean
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - curl -fsS https://rukter.ai/health
+    - curl -fsS https://rukter.ai/api/config | jq '{runtimePlatform,amdStoryOrchestratorConfigured,amdGpuPublicEnabled}'
+    - curl -fsS https://rukter.ai/amd-worker/bootstrap.sh | grep -Fq '#!/usr/bin/env bash'
+
+verify:public-image:
+  stage: verify
+  services: []
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  script:
+    - docker logout ghcr.io || true
+    - docker buildx imagetools inspect "${PUBLIC_CONTAINER_IMAGE}"
+    - docker pull --platform linux/amd64 "${PUBLIC_CONTAINER_IMAGE}"
+    - export PUBLIC_IMAGE_PLATFORM="$(docker image inspect "${PUBLIC_CONTAINER_IMAGE}" --format '{{.Architecture}}/{{.Os}}')"
+    - |
+      echo "Anonymous public image contract: ${PUBLIC_IMAGE_PLATFORM}"
+    - test "${PUBLIC_IMAGE_PLATFORM}" = "amd64/linux"

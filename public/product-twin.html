@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rukter.ai - 3D Product Twin</title>
+    <meta name="description" content="Turn product photos into an interactive, evidence-backed 3D Product Twin with AMD compute.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Arial' font-size='18' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/product-twin.css?v=20260711m">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Rukter.ai home">Rukter<span>.ai</span></a>
+      <div class="header-center">
+        <button id="newButton" class="header-command" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span>New twin</span>
+        </button>
+      </div>
+      <div id="headerActions" class="header-actions" hidden>
+        <span id="computeStatus" class="compute-status"><i></i> AMD GPU reconstruction</span>
+        <button id="exportButton" class="icon-button" type="button" aria-label="Export product twin" title="Export product twin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>
+        </button>
+        <button id="saveButton" class="primary-command" type="button">Save to Rukter</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="uploadView" class="upload-view" aria-labelledby="uploadTitle">
+        <label id="dropzone" class="upload-target" for="productImages">
+          <input id="productImages" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/gif,video/quicktime,video/mp4,.mov,.mp4" multiple>
+          <span class="upload-cube" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><path d="m24 5 16 9v20l-16 9-16-9V14zM8 14l16 9 16-9M24 23v20"/></svg>
+          </span>
+          <h1 id="uploadTitle">Create a 3D Product Twin</h1>
+          <p>Drop product photos or one orbit video</p>
+          <span class="choose-button">Choose photos or video</span>
+          <small>1-6 photos or MOV/MP4 · video stays in your browser</small>
+        </label>
+        <div class="capture-guide" aria-label="Recommended source views">
+          <span>Front</span><span>Left</span><span>Back</span><span>Right</span>
+        </div>
+      </section>
+
+      <section id="processingView" class="processing-view" aria-live="polite" hidden>
+        <div class="processing-copy">
+          <p id="processingStep">Preparing source views</p>
+          <h1>Building your Product Twin</h1>
+          <div class="processing-track"><span id="processingProgress"></span></div>
+          <ol>
+            <li data-step="0" class="is-active"><span>1</span>Source views</li>
+            <li data-step="1"><span>2</span>Product isolation</li>
+            <li data-step="2"><span>3</span>Visual evidence</li>
+            <li data-step="3"><span>4</span>Twin preview</li>
+          </ol>
+          <button id="cancelButton" class="text-button" type="button">Cancel</button>
+        </div>
+        <div id="processingSources" class="processing-sources"></div>
+      </section>
+
+      <section id="workspaceView" class="workspace" aria-label="Product Twin workspace" hidden>
+        <section class="twin-stage" aria-label="Interactive Product Twin">
+          <canvas id="twinCanvas"></canvas>
+          <div id="twinLoader" class="twin-loader" aria-live="polite">
+            <i aria-hidden="true"></i>
+            <span>Preparing interactive preview</span>
+          </div>
+          <div class="stage-toolbar" aria-label="Viewer controls">
+            <button id="resetViewButton" class="tool-button" type="button" aria-label="Reset view" title="Reset view">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6"/></svg>
+            </button>
+            <button id="wireframeButton" class="tool-button" type="button" aria-label="Toggle evidence overlay" title="Toggle evidence overlay" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg>
+            </button>
+          </div>
+          <div class="stage-status">
+            <strong id="stageProductName">Product Twin</strong>
+            <span id="stageTruthNote">Depth and unseen surfaces are not verified from one photo.</span>
+          </div>
+          <div class="orbit-hint" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 12c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-2.1 0-4-.6-5.5-1.5M4 12l3-3M4 12l3 3"/></svg>
+          </div>
+        </section>
+
+        <aside class="twin-inspector">
+          <header class="inspector-header">
+            <h1>Product Twin</h1>
+            <div class="mode-tabs" role="tablist" aria-label="Inspector view">
+              <button id="modelTab" type="button" role="tab" aria-selected="true">Model</button>
+              <button id="evidenceTab" type="button" role="tab" aria-selected="false">Evidence</button>
+            </div>
+          </header>
+
+          <div id="modelPanel" class="inspector-panel" role="tabpanel">
+            <section class="twin-mode">
+              <div class="mode-line"><i></i><strong id="twinModeLabel">2.5D Product Twin Preview</strong></div>
+              <p id="sourceCount">1 source view</p>
+              <div id="sourceStrip" class="source-strip"></div>
+            </section>
+            <section class="reconstruction-section">
+              <h2>Reconstruction</h2>
+              <dl id="reconstructionList" class="compact-list"></dl>
+            </section>
+          </div>
+
+          <div id="evidencePanel" class="inspector-panel" role="tabpanel" hidden>
+            <section class="evidence-section">
+              <div class="section-heading"><h2>Visual evidence</h2><span id="evidenceCount">0</span></div>
+              <ul id="visualEvidenceList" class="visual-evidence"></ul>
+            </section>
+            <section class="compute-section">
+              <h2>AMD evidence</h2>
+              <dl id="amdEvidenceList" class="compact-list"></dl>
+            </section>
+          </div>
+
+          <footer class="inspector-actions">
+            <button id="inspectorExportButton" class="export-command" type="button">
+              <span>Export twin</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>
+            </button>
+            <button id="inspectorSaveButton" class="save-command" type="button">Save to Rukter</button>
+          </footer>
+        </aside>
+      </section>
+    </main>
+
+    <dialog id="notesDialog" class="notes-dialog">
+      <form method="dialog">
+        <header><h2>Optional product context</h2><button value="cancel" aria-label="Close">×</button></header>
+        <textarea id="brief" rows="5" placeholder="Add only facts the photos cannot show."></textarea>
+        <div class="dialog-fields">
+          <label><span>Channel</span><select id="channel"><option>DTC</option><option>TikTok Shop</option><option>Shopee</option></select></label>
+          <label><span>Market</span><input id="market" value="Thailand and Southeast Asia"></label>
+        </div>
+        <button class="dialog-done" value="default">Done</button>
+      </form>
+    </dialog>
+
+    <button id="notesButton" class="notes-button" type="button" title="Product context" aria-label="Open product context">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg>
+    </button>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/product-twin.js?v=20260711m"></script>
+  </body>
+</html>

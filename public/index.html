@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rukter.ai - Product Story Director</title>
+    <meta name="description" content="Turn product photos into a directed product story with visible AI activity and zero-idle AMD GPU compute.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Arial' font-size='18' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css?v=20260711story1">
+  </head>
+  <body data-view="upload">
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Rukter.ai home">Rukter<span>.ai</span></a>
+      <div class="header-title" aria-live="polite">
+        <strong id="headerTitle">Product Story Director</strong>
+        <span id="headerSubtitle">Multi-photo to video</span>
+      </div>
+      <nav class="header-actions" aria-label="Product tools">
+        <a class="icon-link" href="/product-twin.html" title="Open 3D Product Twin" aria-label="Open 3D Product Twin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg>
+        </a>
+        <button id="newStoryButton" class="icon-button" type="button" title="New story" aria-label="Create a new story" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button id="computeBadge" class="compute-badge" type="button" title="Check live AMD GPU capacity"><i></i><span>AMD GPU offline</span></button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="uploadView" class="upload-view" aria-labelledby="uploadTitle">
+        <div class="upload-intro">
+          <p class="eyebrow">Product story / 01</p>
+          <h1 id="uploadTitle">Turn product photos into a story.</h1>
+          <p class="intro-copy">Add three to eight real views. Rukter directs the sequence, motion and copy while preserving the product in every frame.</p>
+          <ol class="flow-summary" aria-label="Workflow summary">
+            <li><span>01</span>Upload views</li>
+            <li><span>02</span>Direct the story</li>
+            <li><span>03</span>Export video</li>
+          </ol>
+        </div>
+
+        <div class="upload-workbench">
+          <label id="dropzone" class="dropzone" for="productImages">
+            <input id="productImages" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/gif" multiple>
+            <span class="upload-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 14v6h14v-6"/></svg>
+            </span>
+            <strong>Drop product photos here</strong>
+            <span>or choose files</span>
+            <small>JPG, PNG, WebP or AVIF · 3–8 photos</small>
+          </label>
+
+          <section id="sourceSection" class="source-section" hidden aria-labelledby="sourceTitle">
+            <div class="section-line">
+              <div><span class="section-index">01</span><h2 id="sourceTitle">Source views</h2></div>
+              <button id="addPhotosButton" class="text-command" type="button">Add photos</button>
+            </div>
+            <div id="sourceGrid" class="source-grid"></div>
+            <p id="sourceRequirement" class="source-requirement">Add at least 3 photos.</p>
+          </section>
+
+          <section class="direction-section" aria-labelledby="directionTitle">
+            <div class="section-line">
+              <div><span class="section-index">02</span><h2 id="directionTitle">Direction</h2></div>
+            </div>
+            <div class="mode-selector" role="radiogroup" aria-label="Generation mode">
+              <label class="mode-option">
+                <input type="radio" name="storyMode" value="fast_story" checked>
+                <span><strong>Motion Preview</strong><small>Source-photo animation · no GPU cost</small></span>
+                <i>Ready</i>
+              </label>
+              <label id="amdModeOption" class="mode-option">
+                <input id="amdModeInput" type="radio" name="storyMode" value="amd_cinematic">
+                <span><strong>AMD Cinematic</strong><small>Wan 2.2 multi-clip filmmaking · GPU per job</small></span>
+                <i id="amdModeState">Checking</i>
+              </label>
+            </div>
+            <button id="capacityButton" class="capacity-button" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6"/></svg>
+              <span><strong>Check AMD capacity</strong><small>Live check only · no GPU billing</small></span>
+              <i id="capacityState">Check now</i>
+            </button>
+            <div class="direction-fields">
+              <label><span>Format</span><select id="aspect"><option value="9:16">9:16 Story</option><option value="1:1">1:1 Square</option><option value="16:9">16:9 Landscape</option></select></label>
+              <label><span>Market</span><input id="market" value="Thailand and Southeast Asia"></label>
+            </div>
+            <details class="optional-context">
+              <summary>Optional product facts</summary>
+              <textarea id="brief" rows="3" placeholder="Add only price, materials, ingredients or claims the photos cannot show."></textarea>
+            </details>
+          </section>
+
+          <button id="generateButton" class="generate-button" type="button" disabled>
+            <span>Direct Product Story</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5"/></svg>
+          </button>
+          <p id="computeNote" class="compute-note">AMD compute starts only for an AMD Cinematic job and is destroyed after completion.</p>
+        </div>
+      </section>
+
+      <section id="studioView" class="studio-view" hidden aria-label="Product Story workspace">
+        <aside class="activity-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Live job</p><h1>Activity</h1></div>
+            <time id="elapsedTime">00:00</time>
+          </div>
+          <ol id="activityList" class="activity-list"></ol>
+          <div id="jobWarning" class="job-warning" hidden></div>
+          <button id="cancelJobButton" class="secondary-button" type="button">Cancel job</button>
+        </aside>
+
+        <section class="story-stage">
+          <header class="stage-header">
+            <div><span id="stageKicker">Product Story</span><strong id="storyTitle">Directing your product</strong></div>
+            <div class="stage-state"><i></i><span id="jobStatus">Queued</span></div>
+          </header>
+          <div class="preview-shell">
+            <div id="storyFrame" class="story-frame" data-aspect="9:16">
+              <img id="storyImage" alt="Current product story frame">
+              <div class="frame-shade"></div>
+              <div class="frame-copy"><span id="shotNumber">01 / 05</span><h2 id="storyCaption">Preparing your story</h2></div>
+              <div id="framePreparing" class="frame-preparing"><i></i><span>Analyzing source views</span></div>
+              <video id="generatedVideo" playsinline controls hidden></video>
+            </div>
+          </div>
+          <div class="playback-row">
+            <button id="playButton" class="round-button" type="button" aria-label="Play story" title="Play story">
+              <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg>
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
+            </button>
+            <div class="playback-track"><span id="playbackProgress"></span></div>
+            <time id="playbackTime">00:00 / 00:15</time>
+            <button id="fullscreenButton" class="icon-button" type="button" aria-label="Open preview fullscreen" title="Open preview fullscreen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg>
+            </button>
+          </div>
+          <div id="timeline" class="timeline" aria-label="Story timeline"></div>
+        </section>
+
+        <aside class="job-panel">
+          <div class="panel-heading dark">
+            <div><p class="eyebrow">Runtime</p><h1>Job status</h1></div>
+            <span id="jobId">—</span>
+          </div>
+          <dl class="job-facts">
+            <div><dt>Mode</dt><dd id="jobMode">Motion Preview</dd></div>
+            <div><dt>Worker</dt><dd id="workerState">Browser</dd></div>
+            <div><dt>AMD GPU</dt><dd id="gpuState">Offline</dd></div>
+            <div><dt>Billing</dt><dd id="billingState" class="safe">Inactive</dd></div>
+            <div><dt>Release policy</dt><dd>Destroy after job</dd></div>
+            <div><dt>Output</dt><dd id="outputState">Waiting</dd></div>
+          </dl>
+          <section class="identity-guard">
+            <span class="guard-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.6 2.8 8.5 7 10 4.2-1.5 7-5.4 7-10V6zM9 12l2 2 4-5"/></svg>
+            </span>
+            <div><strong>Product identity guard</strong><p>Source pixels, packaging text and logos stay unchanged.</p></div>
+          </section>
+          <div class="job-actions">
+            <button id="exportVideoButton" class="primary-button" type="button" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 20h14"/></svg>
+              <span>Export preview video</span>
+            </button>
+            <button id="exportStoryboardButton" class="secondary-dark-button" type="button" disabled>Export storyboard</button>
+            <button id="releaseGpuButton" class="release-button" type="button" disabled>Release GPU now</button>
+          </div>
+          <p id="exportStatus" class="export-status">The browser export preserves the uploaded product photos.</p>
+        </aside>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/app.js?v=20260711story1"></script>
+  </body>
+</html>

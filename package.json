@@ -1,0 +1,29 @@
+{
+  "name": "rukter-ai-launch-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rukter.ai Launch Agent for AMD Developer Hackathon ACT II Track 3.",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test",
+    "smoke": "node scripts/smoke.mjs",
+    "hackathon:contract": "node scripts/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "gsap": "^3.15.0",
+    "html2canvas": "1.4.1",
+    "sharp": "^0.35.3",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@fontsource-variable/archivo": "5.2.8",
+    "@fontsource-variable/manrope": "5.2.8",
+    "@fontsource/instrument-serif": "5.2.8"
+  }
+}

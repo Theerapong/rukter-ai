@@ -1,0 +1,10 @@
+.git
+.gitlab
+.ci-artifacts
+.terraform
+.terraform-plugins
+infra
+node_modules
+npm-debug.log
+*.tfplan
+terraform_plan*.log

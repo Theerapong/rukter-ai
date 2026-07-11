@@ -4,6 +4,8 @@ This Terraform environment creates the Rukter.ai Launch Agent deployment on Digi
 
 GitLab CI builds the root `Dockerfile` as a `linux/amd64` image, pushes it to DigitalOcean Container Registry, and passes the exact image tag into Terraform.
 
+Terraform state and locking use the private GitLab-managed HTTP backend. The first plan imports the existing `rukter-ai-launch-agent` App Platform app when that state is empty, preventing a duplicate production app during the backend migration.
+
 ## Secrets
 
 CI reads these masked GitLab CI/CD variables:

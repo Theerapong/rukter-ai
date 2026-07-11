@@ -8,13 +8,7 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket         = "rukter-terraform-state-prod"
-    key            = "rukter-ai-launch-agent/digitalocean/terraform.tfstate"
-    region         = "ap-southeast-1"
-    dynamodb_table = "rukter-terraform-lock-prod"
-    encrypt        = true
-  }
+  backend "http" {}
 }
 
 provider "digitalocean" {}

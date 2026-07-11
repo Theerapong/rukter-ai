@@ -22,7 +22,7 @@ AMD Cinematic uses an ephemeral lease instead of an always-on GPU:
 2. The lease orchestrator creates one AMD MI300X worker only for that job.
 3. The worker must report a real ROCm device and pass product identity checks.
 4. The orchestrator destroys the GPU Droplet after success, failure, timeout, or cancellation.
-5. A 50-minute hard TTL reaper is the second release path if the job process disappears.
+5. A five-minute background reaper destroys idle leases at a 30-minute hard TTL if the job process disappears.
 
 Powering off a GPU Droplet does not stop billing. The required release policy is `destroy_after_job`. Public AMD jobs remain disabled until the worker, destroy path, TTL reaper, regional access, and budget alerts have been verified manually.
 

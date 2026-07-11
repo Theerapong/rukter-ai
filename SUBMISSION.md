@@ -27,7 +27,7 @@ The user can see the entire system: upload, vision analysis, storyboard, GPU pro
 - The GPU workflow combines SAM2 product masks, Wan 2.2 image-to-video motion, and OCR plus visual-embedding identity checks.
 - Rukter accepts cinematic output only when `evidence.identityVerified` is true.
 - The lease orchestrator creates one AMD MI300X worker per job and destroys it after success, failure, cancellation, or timeout.
-- A 50-minute hard TTL reaper is the second cleanup path if a job process disappears.
+- A five-minute background reaper destroys idle leases at a 30-minute hard TTL if the job process disappears.
 
 ## Demo Script
 

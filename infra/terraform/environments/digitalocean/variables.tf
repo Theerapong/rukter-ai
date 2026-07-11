@@ -144,7 +144,7 @@ variable "amd_gpu_ssh_key_name" {
 variable "amd_gpu_lease_ttl_seconds" {
   type        = number
   description = "Hard maximum lifetime for an AMD GPU worker before the TTL reaper destroys it."
-  default     = 3000
+  default     = 1800
 }
 
 variable "amd_gpu_worker_source_base_url" {

@@ -78,7 +78,7 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       image: process.env.AMD_GPU_IMAGE || 'gpu-amd-base',
       sshKeyFingerprint: process.env.AMD_GPU_SSH_KEY_FINGERPRINT || '',
       sshKeyName: process.env.AMD_GPU_SSH_KEY_NAME || '',
-      ttlSeconds: Number(process.env.AMD_GPU_LEASE_TTL_SECONDS) || 3000,
+      ttlSeconds: Number(process.env.AMD_GPU_LEASE_TTL_SECONDS) || 1800,
       workerSourceBaseUrl: process.env.AMD_GPU_WORKER_SOURCE_BASE_URL,
     })
   : null
@@ -3252,7 +3252,7 @@ const server = http.createServer(async (req, res) => {
       amdGpuPublicEnabled: storyGpuEnabled(),
       amdGpuRegion: process.env.AMD_GPU_REGION || 'atl1',
       amdGpuSize: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb-devcloud',
-      amdGpuLeaseTtlSeconds: gpuLeaseOrchestrator?.leaseTtlSeconds || 3000,
+      amdGpuLeaseTtlSeconds: gpuLeaseOrchestrator?.leaseTtlSeconds || 1800,
       amdGpuCapacityState: process.env.AMD_GPU_CAPACITY_STATE || 'unknown',
       amdGpuAvailabilityReason: process.env.AMD_GPU_AVAILABILITY_REASON || '',
       gpuZeroIdlePolicy: 'destroy_after_job',
@@ -3425,11 +3425,16 @@ server.listen(port, () => {
 })
 
 if (gpuLeaseOrchestrator) {
-  const reap = () => gpuLeaseOrchestrator.reapExpiredLeases()
-    .then((result) => {
-      if (result.released.length) console.log(`Destroyed expired AMD GPU leases: ${result.released.join(', ')}`)
-    })
-    .catch((error) => console.error(`AMD GPU TTL reaper failed: ${error instanceof Error ? error.message : String(error)}`))
+  const reap = () => {
+    const activeLeaseIds = [...storyJobs.values()]
+      .filter((job) => job.gpu?.billing === 'active_for_job' && job.gpu?.leaseId)
+      .map((job) => job.gpu.leaseId)
+    return gpuLeaseOrchestrator.reapExpiredLeases({ excludeLeaseIds: activeLeaseIds })
+      .then((result) => {
+        if (result.released.length) console.log(`Destroyed expired AMD GPU leases: ${result.released.join(', ')}`)
+      })
+      .catch((error) => console.error(`AMD GPU TTL reaper failed: ${error instanceof Error ? error.message : String(error)}`))
+  }
   setTimeout(reap, 5_000).unref()
-  setInterval(reap, 60_000).unref()
+  setInterval(reap, 5 * 60_000).unref()
 }

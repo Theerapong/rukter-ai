@@ -105,6 +105,24 @@ test('reaper destroys an expired tagged GPU lease', async () => {
   assert.ok(requests.some((request) => request.method === 'DELETE'))
 })
 
+test('reaper preserves a lease attached to an active story job', async () => {
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
+    if (url.includes('/droplets?')) return json({ droplets: [{ id: 456, created_at: createdAt }] })
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    fetchImpl,
+    now: () => new Date('2026-07-11T19:00:00Z').getTime(),
+  })
+  const result = await orchestrator.reapExpiredLeases({ excludeLeaseIds: ['456'] })
+  assert.deepEqual(result.released, [])
+  assert.deepEqual(result.protected, ['456'])
+  assert.ok(!requests.some((request) => request.method === 'DELETE'))
+})
+
 test('checks live MI300X capacity without creating a Droplet', async () => {
   const requests = []
   const fetchImpl = async (url, options = {}) => {

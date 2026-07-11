@@ -166,7 +166,7 @@ terraform:plan:digitalocean:
     - export TF_VAR_amd_gpu_image="${AMD_GPU_IMAGE:-gpu-amd-base}"
     - export TF_VAR_amd_gpu_ssh_key_fingerprint="${AMD_GPU_SSH_KEY_FINGERPRINT:-}"
     - export TF_VAR_amd_gpu_ssh_key_name="${AMD_GPU_SSH_KEY_NAME:-}"
-    - export TF_VAR_amd_gpu_lease_ttl_seconds="${AMD_GPU_LEASE_TTL_SECONDS:-3000}"
+    - export TF_VAR_amd_gpu_lease_ttl_seconds="${AMD_GPU_LEASE_TTL_SECONDS:-1800}"
     - export TF_VAR_amd_gpu_worker_source_base_url="${AMD_GPU_WORKER_SOURCE_BASE_URL:-https://rukter.ai/amd-worker}"
     - export TF_VAR_amd_gpu_capacity_state="${AMD_GPU_CAPACITY_STATE:-unavailable}"
     - export TF_VAR_amd_gpu_availability_reason="${AMD_GPU_AVAILABILITY_REASON:-AMD Developer Cloud capacity is checked live before each job.}"

@@ -274,8 +274,8 @@ else
       break
     fi
     if (( deleted_this_pass == 0 )); then
-      echo "${remaining} stale manifests remain referenced after pass ${pass}; refusing unsafe deletion." >&2
-      exit 1
+      echo "${remaining} stale manifests remain referenced after pass ${pass}; retaining them and continuing to garbage collection." >&2
+      break
     fi
     pending="${deferred}"
   done

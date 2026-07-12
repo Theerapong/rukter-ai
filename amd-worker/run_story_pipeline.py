@@ -24,6 +24,7 @@ INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "16"))
 MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
+IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD", "0.90"))
 
 
 def frame_to_image(frame) -> Image.Image:
@@ -94,13 +95,17 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
     source_tokens = normalized_tokens(source)
     sampled_tokens = [normalized_tokens(frame) for frame in samples]
     retention = 1.0 if not source_tokens else min(len(source_tokens & tokens) / len(source_tokens) for tokens in sampled_tokens)
-    verified = min(similarities) >= IDENTITY_THRESHOLD and retention >= (0.15 if len(source_tokens) >= 2 else 0.0)
+    clip_similarity_min = min(similarities)
+    ocr_retention_required = bool(source_tokens) and clip_similarity_min < IDENTITY_CLIP_FALLBACK_THRESHOLD
+    verified = clip_similarity_min >= IDENTITY_THRESHOLD and (not ocr_retention_required or retention >= 0.15)
     return {
         "identityVerified": verified,
-        "clipSimilarityMin": round(min(similarities), 4),
+        "clipSimilarityMin": round(clip_similarity_min, 4),
         "clipSimilaritySamples": [round(value, 4) for value in similarities],
         "sourceOcrTokenCount": len(source_tokens),
         "ocrRetentionMin": round(retention, 4),
+        "ocrRetentionRequired": ocr_retention_required,
+        "clipFallbackThreshold": IDENTITY_CLIP_FALLBACK_THRESHOLD,
         "threshold": IDENTITY_THRESHOLD,
     }
 

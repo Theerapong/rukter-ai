@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   buildProductStoryPlan,
@@ -81,6 +82,12 @@ test('creates a nine-step observable activity contract with an explicit GPU queu
   assert.equal(activity.find((step) => step.id === 'vision_analysis').label, 'Fireworks vision brief')
   assert.equal(activity.find((step) => step.id === 'gpu_queue').label, 'AMD render queue')
   assert.equal(activity.find((step) => step.id === 'motion_shots').label, 'Text-guided video generation')
+})
+
+test('keeps Activity trace details collapsed until the user expands them', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  assert.match(appSource, /const expandedActivitySteps = new Set\(\)/)
+  assert.doesNotMatch(appSource, /new Set\(\[['"]vision_analysis/)
 })
 
 test('builds a truthful Fireworks trace with observations and directed video prompts', () => {

@@ -70,7 +70,7 @@ let playbackStartedAt = 0
 let playbackOffset = 0
 let toastTimer = null
 let activeShotIndex = 0
-const expandedActivitySteps = new Set(['vision_analysis'])
+const expandedActivitySteps = new Set()
 
 function showToast(message, duration = 4200) {
   clearTimeout(toastTimer)

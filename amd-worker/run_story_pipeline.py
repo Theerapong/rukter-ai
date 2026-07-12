@@ -21,7 +21,9 @@ from transformers import CLIPModel, CLIPProcessor
 
 FPS = int(os.getenv("WAN_FPS", "16"))
 MAX_NUM_FRAMES = int(os.getenv("WAN_NUM_FRAMES", "81"))
-INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "16"))
+INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "24"))
+GUIDANCE_SCALE = float(os.getenv("WAN_GUIDANCE_SCALE", "3.2"))
+IDENTITY_RETRY_GUIDANCE_SCALE = float(os.getenv("WAN_IDENTITY_RETRY_GUIDANCE_SCALE", "2.8"))
 MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
@@ -35,7 +37,8 @@ IDENTITY_RETRY_PROMPT = (
 )
 IDENTITY_RETRY_NEGATIVE = (
     " changed product identity, warped logo, missing text, unreadable text, different luggage, missing wheels, "
-    "altered handles, changed shell pattern, product morphing, extra objects"
+    "altered handles, changed shell pattern, product morphing, extra objects, person, human, hand, fingers, arm, "
+    "tool, pen, stick, utensil, unrelated box, unrelated packaging, background clutter"
 )
 
 
@@ -285,7 +288,7 @@ def main() -> None:
                 width=width,
                 num_frames=num_frames,
                 num_inference_steps=INFERENCE_STEPS,
-                guidance_scale=4.4 if retrying else 5.0,
+                guidance_scale=IDENTITY_RETRY_GUIDANCE_SCALE if retrying else GUIDANCE_SCALE,
                 generator=generator,
             )
             frames = [frame_to_image(frame) for frame in result.frames[0]]

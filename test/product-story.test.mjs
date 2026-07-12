@@ -72,6 +72,9 @@ test('directs AMD Cinematic as verified multi-clip generation rather than browse
   assert.ok(plan.shots.every((shot) => shot.generation.task === 'text_guided_image_to_video'))
   assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'AMD ROCm'))
   assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Clear evidence-led sequencing')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('No people, hands, fingers')))
+  assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('hand')))
+  assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('unrelated packaging')))
   assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'reference_constrained_and_verified'))
 })
 

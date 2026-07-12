@@ -81,7 +81,9 @@ trap 'rm -f "${environment_file}"' EXIT
   printf 'WAN_OCR_RETENTION_MIN_TOKENS=2\n'
   printf 'WAN_FPS=16\n'
   printf 'WAN_NUM_FRAMES=81\n'
-  printf 'WAN_INFERENCE_STEPS=16\n'
+  printf 'WAN_INFERENCE_STEPS=24\n'
+  printf 'WAN_GUIDANCE_SCALE=3.2\n'
+  printf 'WAN_IDENTITY_RETRY_GUIDANCE_SCALE=2.8\n'
   printf 'ROCM_WORKER_IMAGE=rocm/pytorch:latest\n'
   printf 'PORT=8080\n'
 } >"${environment_file}"

@@ -617,6 +617,7 @@ async function createStory() {
     const job = await response.json().catch(() => null)
     if (!response.ok || !job?.id) throw new Error(job?.error || 'Could not start Product Story.')
     currentJob = job
+    history.replaceState(null, '', `${location.pathname}?job=${encodeURIComponent(job.id)}`)
     activeShotIndex = 0
     renderTimeline(null)
     framePreparing.hidden = false
@@ -696,6 +697,7 @@ function resetStory() {
   clearInterval(elapsedTimer)
   pauseStory()
   currentJob = null
+  history.replaceState(null, '', location.pathname)
   playbackOffset = 0
   activeShotIndex = 0
   timeline.replaceChildren()
@@ -881,6 +883,28 @@ async function loadConfig() {
   }
 }
 
+async function resumeStoryFromUrl() {
+  const id = new URLSearchParams(location.search).get('job')
+  if (!id) return
+  try {
+    const response = await fetch(`/api/story-jobs/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(10_000) })
+    const job = await response.json()
+    if (!response.ok) throw new Error(job.error || 'Could not resume Product Story.')
+    currentJob = job
+    activeShotIndex = 0
+    renderTimeline(null)
+    framePreparing.hidden = false
+    generatedVideo.hidden = true
+    setView('studio')
+    renderJob(job)
+    startElapsedTimer(job.createdAt)
+    if (!terminalStates.has(job.status)) pollJob(job.id)
+  } catch (error) {
+    history.replaceState(null, '', location.pathname)
+    showToast(error instanceof Error ? error.message : String(error), 5200)
+  }
+}
+
 productImages.addEventListener('change', () => addFiles(productImages.files))
 addPhotosButton.addEventListener('click', () => productImages.click())
 dropzone.addEventListener('dragover', (event) => { event.preventDefault(); dropzone.classList.add('is-dragging') })
@@ -910,4 +934,4 @@ window.addEventListener('beforeunload', () => sources.forEach((source) => URL.re
 
 renderActivity()
 renderSources()
-loadConfig()
+loadConfig().then(resumeStoryFromUrl)

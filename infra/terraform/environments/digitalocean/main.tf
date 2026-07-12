@@ -21,6 +21,7 @@ locals {
     AMD_GPU_REGION                 = var.amd_gpu_region
     AMD_GPU_SIZE                   = var.amd_gpu_size
     AMD_GPU_IMAGE                  = var.amd_gpu_image
+    AMD_GPU_VPC_UUID               = var.amd_gpu_vpc_uuid
     AMD_GPU_SSH_KEY_FINGERPRINT    = var.amd_gpu_ssh_key_fingerprint
     AMD_GPU_SSH_KEY_NAME           = var.amd_gpu_ssh_key_name
     AMD_GPU_LEASE_TTL_SECONDS      = tostring(var.amd_gpu_lease_ttl_seconds)

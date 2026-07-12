@@ -90,7 +90,7 @@ function selectedMode() {
 
 function updateGenerateAvailability() {
   const cinematicUnavailable = selectedMode() === 'amd_cinematic'
-    && (!config.amdGpuPublicEnabled || config.amdGpuCapacityState !== 'available')
+    && (!config.amdGpuPublicEnabled || !['available', 'requestable'].includes(config.amdGpuCapacityState))
   generateButton.disabled = sources.length < minImages || cinematicUnavailable
   generateButton.querySelector('span').textContent = cinematicUnavailable
     ? 'AMD Cinematic is offline'
@@ -104,31 +104,33 @@ function renderCapacity(capacity = config) {
   const available = state === 'available' && (capacity.available ?? true)
   const requestable = state === 'requestable' || capacity.requestable === true
   const publicEnabled = capacity.publicEnabled ?? capacity.amdGpuPublicEnabled ?? false
-  const canStart = available && publicEnabled
+  const canStart = (available || requestable) && publicEnabled
   const reason = capacity.reason || capacity.amdGpuAvailabilityReason || ''
   config.amdGpuCapacityState = state
   config.amdGpuAvailabilityReason = reason
   config.amdGpuPublicEnabled = publicEnabled
-  amdModeState.textContent = canStart ? 'Available' : available ? 'Owner locked' : requestable ? 'Unconfirmed' : 'No capacity'
+  amdModeState.textContent = canStart ? requestable ? 'On demand' : 'Available' : available || requestable ? 'Owner locked' : 'No capacity'
   amdModeInput.disabled = !canStart
   amdModeOption.classList.toggle('is-disabled', !canStart)
   amdModeState.title = canStart
     ? 'AMD GPU starts on demand and is destroyed after the job.'
     : reason || 'AMD Cinematic is unavailable.'
-  capacityState.textContent = canStart ? 'Ready' : available ? 'Locked' : requestable ? 'Unconfirmed' : 'Unavailable'
+  capacityState.textContent = canStart ? requestable ? 'On demand' : 'Ready' : available || requestable ? 'Locked' : 'Unavailable'
   capacityButton.classList.toggle('is-ready', canStart)
   computeBadge.classList.toggle('is-safe', canStart)
   computeBadge.querySelector('span').textContent = canStart
-    ? 'AMD GPU ready on demand'
+    ? requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
     : available
       ? 'AMD GPU owner locked'
       : requestable
         ? 'AMD capacity unconfirmed'
         : 'AMD capacity unavailable'
   computeNote.textContent = canStart
-    ? 'Select AMD Cinematic, then start the job. Billing begins only after the Droplet request and stops when it is destroyed.'
+    ? requestable
+      ? 'Select AMD Cinematic to create one MI300X on demand. Billing starts only if provisioning succeeds and stops when the Droplet is destroyed.'
+      : 'Select AMD Cinematic, then start the job. Billing begins only after the Droplet request and stops when it is destroyed.'
     : requestable
-      ? `${reason} AMD Cinematic remains disabled until capacity is confirmed.`
+      ? `${reason} The owner safety switch is off.`
       : reason || 'AMD Cinematic is unavailable. Checking capacity never starts GPU billing.'
   if (!canStart && selectedMode() === 'amd_cinematic') document.querySelector('input[value="fast_story"]').checked = true
   updateGenerateAvailability()
@@ -144,14 +146,16 @@ async function checkGpuCapacity() {
     const capacity = await response.json()
     renderCapacity(capacity)
     if (!response.ok) throw new Error(capacity.reason || 'AMD capacity check failed.')
-    if (capacity.state === 'available' && capacity.available && capacity.publicEnabled) {
+    if ((capacity.available || capacity.requestable) && capacity.publicEnabled) {
       amdModeInput.checked = true
       updateGenerateAvailability()
-      showToast('AMD capacity is ready. Start the story to create the GPU Droplet.', 5600)
+      showToast(capacity.requestable
+        ? 'AMD on-demand provisioning is ready. Starting the story will request one MI300X.'
+        : 'AMD capacity is ready. Start the story to create the GPU Droplet.', 5600)
     } else if (capacity.state === 'available' && capacity.available) {
       showToast('AMD capacity exists, but the owner safety switch is off.', 5600)
     } else if (capacity.state === 'requestable' || capacity.requestable) {
-      showToast('AMD access exists, but live MI300X capacity is not confirmed. No GPU billing has started.', 5600)
+      showToast('AMD on-demand access exists, but the owner safety switch is off. No GPU billing has started.', 5600)
     } else {
       showToast(capacity.reason || 'No AMD MI300X capacity is available right now.', 5600)
     }

@@ -126,7 +126,13 @@ variable "amd_gpu_availability_reason" {
 variable "amd_gpu_image" {
   type        = string
   description = "ROCm-ready AMD GPU image slug."
-  default     = "gpu-amd-base"
+  default     = "amddevelopercloud-pytorch2100rocm724"
+}
+
+variable "amd_gpu_vpc_uuid" {
+  type        = string
+  description = "Optional region-matched VPC UUID used by AMD Developer Cloud GPU provisioning."
+  default     = ""
 }
 
 variable "amd_gpu_ssh_key_fingerprint" {

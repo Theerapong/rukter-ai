@@ -75,7 +75,8 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       publicUrl: amdGpuPublicUrl,
       region: process.env.AMD_GPU_REGION || 'atl1',
       size: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb-devcloud',
-      image: process.env.AMD_GPU_IMAGE || 'gpu-amd-base',
+      image: process.env.AMD_GPU_IMAGE || 'amddevelopercloud-pytorch2100rocm724',
+      vpcUuid: process.env.AMD_GPU_VPC_UUID || '',
       sshKeyFingerprint: process.env.AMD_GPU_SSH_KEY_FINGERPRINT || '',
       sshKeyName: process.env.AMD_GPU_SSH_KEY_NAME || '',
       ttlSeconds: Number(process.env.AMD_GPU_LEASE_TTL_SECONDS) || 1800,
@@ -2262,9 +2263,9 @@ async function handleCreateStoryJob(req, res) {
     if (request.mode === 'amd_cinematic') {
       try {
         const capacity = await gpuLeaseOrchestrator.checkCapacity()
-        if (!capacity.available || capacity.state !== 'available') {
+        if (!capacity.available && !capacity.requestable) {
           sendJson(res, 409, {
-            code: capacity.state === 'requestable' ? 'amd_capacity_unconfirmed' : 'amd_capacity_unavailable',
+            code: 'amd_capacity_unavailable',
             error: capacity.reason,
             capacity,
           })

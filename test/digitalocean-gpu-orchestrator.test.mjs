@@ -37,12 +37,13 @@ test('validates an AMD GPU lease request without creating a billed Droplet', asy
     workerToken: 'control-token',
     publicUrl: 'https://rukter.ai',
     sshKeyName: 'rukter-key',
+    vpcUuid: '00000000-0000-4000-8000-000000000001',
     fetchImpl,
   })
   const result = await orchestrator.startLease({ dryRun: true })
   assert.equal(result.status, 'validated')
   assert.equal(result.size, 'gpu-mi300x1-192gb-devcloud')
-  assert.equal(result.image, 'gpu-amd-base')
+  assert.equal(result.image, 'amddevelopercloud-pytorch2100rocm724')
   assert.ok(!requests.some((request) => request.method === 'POST'))
 })
 
@@ -82,7 +83,7 @@ test('creates, verifies, and destroys one MI300X lease', async () => {
   const createPayload = JSON.parse(requests.find((request) => request.method === 'POST').body)
   assert.equal(createPayload.size, 'gpu-mi300x1-192gb-devcloud')
   assert.equal(createPayload.region, 'atl1')
-  assert.equal(createPayload.image, 'gpu-amd-base')
+  assert.equal(createPayload.image, 'amddevelopercloud-pytorch2100rocm724')
   assert.deepEqual(createPayload.tags, ['rukter-product-story-ephemeral'])
   assert.ok(requests.some((request) => request.method === 'DELETE'))
 })
@@ -199,7 +200,35 @@ test('keeps an unlisted AMD Developer Cloud entitlement requestable', async () =
   assert.equal(capacity.requestable, true)
   assert.equal(capacity.state, 'requestable')
   assert.equal(capacity.capacitySource, 'developer_cloud_entitlement')
-  assert.match(capacity.reason, /not confirmed/i)
+  assert.match(capacity.reason, /on-demand/i)
+})
+
+test('creates an entitled Developer Cloud GPU on demand with the official image and VPC contract', async () => {
+  let createPayload
+  const fetchImpl = async (url, options = {}) => {
+    if (url.includes('/droplets?')) return json({ droplets: [] })
+    if (url.includes('/sizes?')) return json({ sizes: [] })
+    if (url.includes('/account/keys')) return json({ ssh_keys: [{ name: 'rukter-key', id: 57723406 }] })
+    if (url.endsWith('/v2/droplets') && options.method === 'POST') {
+      createPayload = JSON.parse(options.body)
+      return json({ droplet: { id: 987, created_at: createdAt } }, 202)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    workerToken: 'control-token',
+    publicUrl: 'https://rukter.ai',
+    sshKeyName: 'rukter-key',
+    vpcUuid: '00000000-0000-4000-8000-000000000001',
+    fetchImpl,
+  })
+  const lease = await orchestrator.startLease()
+  assert.equal(lease.id, '987')
+  assert.equal(createPayload.image, 'amddevelopercloud-pytorch2100rocm724')
+  assert.equal(createPayload.size, 'gpu-mi300x1-192gb-devcloud')
+  assert.equal(createPayload.region, 'atl1')
+  assert.equal(createPayload.vpc_uuid, '00000000-0000-4000-8000-000000000001')
 })
 
 test('retries Developer Cloud capacity across size aliases and regions', async () => {
@@ -225,6 +254,7 @@ test('retries Developer Cloud capacity across size aliases and regions', async (
     workerToken: 'control-token',
     publicUrl: 'https://rukter.ai',
     sshKeyName: 'rukter-key',
+    vpcUuid: '00000000-0000-4000-8000-000000000001',
     fetchImpl,
   })
   const lease = await orchestrator.startLease()
@@ -239,6 +269,8 @@ test('retries Developer Cloud capacity across size aliases and regions', async (
       'nyc2/gpu-mi300x1-192gb-devcloud',
     ],
   )
+  assert.equal(createRequests[0].vpc_uuid, '00000000-0000-4000-8000-000000000001')
+  assert.equal(createRequests[2].vpc_uuid, undefined)
 })
 
 test('adopts an existing portal-created MI300X lease without creating another Droplet', async () => {

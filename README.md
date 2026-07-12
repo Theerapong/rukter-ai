@@ -215,7 +215,8 @@ export AMD_GPU_ORCHESTRATOR_TOKEN="..."
 export AMD_GPU_DIGITALOCEAN_TOKEN="..."
 export AMD_GPU_REGION="atl1"
 export AMD_GPU_SIZE="gpu-mi300x1-192gb-devcloud"
-export AMD_GPU_IMAGE="gpu-amd-base"
+export AMD_GPU_IMAGE="amddevelopercloud-pytorch2100rocm724"
+export AMD_GPU_VPC_UUID="<region-matched-vpc-uuid>"
 export AMD_GPU_PUBLIC_ENABLED="true"
 ```
 

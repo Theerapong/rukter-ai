@@ -6,7 +6,7 @@ source /etc/rukter-amd-worker.env
 ROCM_WORKER_IMAGE="${ROCM_WORKER_IMAGE:-rocm/pytorch:latest}"
 
 install -d -m 0755 /opt/rukter /var/lib/rukter-models /var/lib/rukter-outputs
-for file in app.py requirements.txt run_story_pipeline.py run_story_pipeline.sh; do
+for file in app.py identity_guard.py requirements.txt run_story_pipeline.py run_story_pipeline.sh; do
   if ! curl -fsSL "${RUKTER_WORKER_SOURCE_BASE%/}/${file}?v=${WORKER_VERSION:-unknown}" -o "/opt/rukter/${file}.download"; then
     if [[ ! -s "/opt/rukter/${file}" ]]; then
       echo "Unable to download ${file} and no preloaded copy exists." >&2

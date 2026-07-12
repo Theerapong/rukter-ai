@@ -2,7 +2,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -11,12 +10,12 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pytesseract
 import requests
 import torch
 from PIL import Image
 from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
 from diffusers.utils import export_to_video
+from identity_guard import product_ocr_evidence
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -27,6 +26,7 @@ MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
 IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD", "0.90"))
+OCR_RETENTION_THRESHOLD = float(os.getenv("WAN_OCR_RETENTION_THRESHOLD", "0.15"))
 OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
 
 
@@ -109,11 +109,6 @@ def resize_cover(image: Image.Image, width: int, height: int) -> Image.Image:
     return resized.crop((left, top, left + width, top + height))
 
 
-def normalized_tokens(image: Image.Image) -> set[str]:
-    text = pytesseract.image_to_string(image)
-    return {token.lower() for token in re.findall(r"[A-Za-z0-9]{3,}", text)}
-
-
 def image_feature_tensor(features) -> torch.Tensor:
     if isinstance(features, torch.Tensor):
         return features
@@ -134,19 +129,24 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
         features = image_feature_tensor(clip_model.get_image_features(**inputs))
         features = features / features.norm(dim=-1, keepdim=True)
     similarities = (features[1:] @ features[0]).detach().float().cpu().tolist()
-    source_tokens = normalized_tokens(source)
-    sampled_tokens = [normalized_tokens(frame) for frame in samples]
+    source_ocr = product_ocr_evidence(source)
+    sampled_ocr = [product_ocr_evidence(frame) for frame in samples]
+    source_tokens = source_ocr["productTokens"]
+    sampled_tokens = [sample["productTokens"] for sample in sampled_ocr]
     retention = 1.0 if not source_tokens else min(len(source_tokens & tokens) / len(source_tokens) for tokens in sampled_tokens)
     clip_similarity_min = min(similarities)
     ocr_retention_required = bool(source_tokens) and clip_similarity_min < IDENTITY_CLIP_FALLBACK_THRESHOLD
-    verified = clip_similarity_min >= IDENTITY_THRESHOLD and (not ocr_retention_required or retention >= 0.15)
+    verified = clip_similarity_min >= IDENTITY_THRESHOLD and (not ocr_retention_required or retention >= OCR_RETENTION_THRESHOLD)
     return {
         "identityVerified": verified,
         "clipSimilarityMin": round(clip_similarity_min, 4),
         "clipSimilaritySamples": [round(value, 4) for value in similarities],
         "sourceOcrTokenCount": len(source_tokens),
+        "sourceAnnotationOcrTokenCount": source_ocr["annotationTokenCount"],
+        "ocrEvidenceMode": source_ocr["mode"],
         "ocrRetentionMin": round(retention, 4),
         "ocrRetentionRequired": ocr_retention_required,
+        "ocrRetentionThreshold": OCR_RETENTION_THRESHOLD,
         "clipFallbackThreshold": IDENTITY_CLIP_FALLBACK_THRESHOLD,
         "threshold": IDENTITY_THRESHOLD,
     }

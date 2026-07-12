@@ -3540,7 +3540,7 @@ async function serveStatic(req, res, pathname) {
 }
 
 async function serveAmdWorkerFile(req, res, pathname) {
-  const allowedFiles = new Set(['bootstrap.sh', 'app.py', 'requirements.txt', 'run_story_pipeline.py', 'run_story_pipeline.sh'])
+  const allowedFiles = new Set(['bootstrap.sh', 'app.py', 'identity_guard.py', 'requirements.txt', 'run_story_pipeline.py', 'run_story_pipeline.sh'])
   const fileName = path.basename(decodeURIComponent(pathname))
   if (!allowedFiles.has(fileName)) {
     sendText(res, 404, 'Not found')

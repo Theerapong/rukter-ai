@@ -50,6 +50,26 @@ test('accepts one source photo for a Product Story', () => {
   assert.equal(plan.identityGuard.generativeProductAlteration, false)
 })
 
+test('keeps a one-photo AMD Cinematic job GPU-active with multiple directed shots', () => {
+  assert.equal(productStoryLimits.minAmdCinematicShots, 4)
+  const plan = buildProductStoryPlan({
+    request: { mode: 'amd_cinematic', sourceImages: [sources[0]] },
+    kit: {
+      productAnalysis: { productType: 'Carry-on suitcase', visibleDetails: ['Ribbed shell'] },
+      hero: { headline: 'One source, multiple GPU shots' },
+      brandAngle: {},
+    },
+  })
+  assert.equal(plan.shots.length, 4)
+  assert.equal(plan.shots.at(-1).endSeconds, 15)
+  assert.ok(plan.shots.every((shot) => shot.sourceId === sources[0].id))
+  assert.ok(plan.shots.every((shot) => shot.sourceUrl === sources[0].url))
+  assert.ok(new Set(plan.shots.map((shot) => shot.motion)).size > 1)
+  assert.ok(plan.shots.every((shot) => shot.generation.task === 'text_guided_image_to_video'))
+  assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'AMD ROCm'))
+  assert.equal(plan.identityGuard.rejectUnverifiedOutput, true)
+})
+
 test('does not regress an active AMD job back into capacity checking', () => {
   assert.equal(shouldSyncAmdQueuePreparation('waiting_for_gpu'), true)
   assert.equal(shouldSyncAmdQueuePreparation('gpu_starting'), false)

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   buildAmdWorkerCloudInit,
@@ -89,8 +90,16 @@ test('creates, verifies, and destroys one MI300X lease', async () => {
   assert.equal(createPayload.size, 'gpu-mi300x1-192gb-devcloud')
   assert.equal(createPayload.region, 'atl1')
   assert.equal(createPayload.image, 'amddevelopercloud-pytorch2100rocm724')
+  assert.equal(createPayload.monitoring, true)
   assert.deepEqual(createPayload.tags, ['rukter-product-story-ephemeral'])
   assert.ok(requests.some((request) => request.method === 'DELETE'))
+})
+
+test('bootstraps the DigitalOcean metrics agent for GPU Insights', () => {
+  const bootstrap = readFileSync(new URL('../amd-worker/bootstrap.sh', import.meta.url), 'utf8')
+  assert.match(bootstrap, /repos\.insights\.digitalocean\.com\/install\.sh/)
+  assert.match(bootstrap, /systemctl enable --now do-agent/)
+  assert.match(bootstrap, /systemctl is-active --quiet do-agent/)
 })
 
 test('reaper destroys an expired tagged GPU lease', async () => {
@@ -234,6 +243,7 @@ test('creates an entitled Developer Cloud GPU on demand with the official image 
   assert.equal(createPayload.image, 'amddevelopercloud-pytorch2100rocm724')
   assert.equal(createPayload.size, 'gpu-mi300x1-192gb-devcloud')
   assert.equal(createPayload.region, 'atl1')
+  assert.equal(createPayload.monitoring, true)
   assert.equal(createPayload.vpc_uuid, '00000000-0000-4000-8000-000000000001')
 })
 

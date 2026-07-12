@@ -104,7 +104,14 @@ REMOTE
 for _ in $(seq 1 120); do
   health="$(curl -fsS --connect-timeout 5 "http://${droplet_ip}:8080/health" 2>/dev/null || true)"
   if jq -e --arg version "${worker_version}" '.status == "ok" and .available == true and .acceptingJobs == true and .workerVersion == $version' <<<"${health}" >/dev/null 2>&1; then
+    metrics_status="$(ssh "${ssh_options[@]}" "root@${droplet_ip}" "systemctl is-active do-agent 2>/dev/null || true")"
+    if [[ "${metrics_status}" != "active" ]]; then
+      ssh "${ssh_options[@]}" "root@${droplet_ip}" "systemctl status do-agent --no-pager 2>/dev/null || true" >&2
+      echo "DigitalOcean metrics agent is not active on persistent AMD Droplet ${droplet_id}; Insights may show No Data." >&2
+      exit 1
+    fi
     jq '{status,service,workerVersion,available,acceptingJobs,device,rocmVersion}' <<<"${health}"
+    printf 'DigitalOcean metrics agent is active on persistent AMD Droplet %s.\n' "${droplet_id}"
     printf 'Persistent AMD Droplet %s is ready at %s and will remain online.\n' "${droplet_id}" "${droplet_ip}"
     exit 0
   fi

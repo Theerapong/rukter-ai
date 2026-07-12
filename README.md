@@ -199,6 +199,8 @@ npm run hackathon:contract
 
 The repo includes Terraform at `infra/terraform/environments/digitalocean` for the current DigitalOcean App Platform deployment. GitLab CI builds a `linux/amd64` image, plans the service, and deploys it through the manual apply job. Cloudflare routes `https://rukter.ai` to this service.
 
+AMD GPU Droplets are created with DigitalOcean monitoring enabled, and the worker bootstrap installs and starts `do-agent` so the Insights tab can receive Droplet and GPU telemetry. Existing persistent workers are re-bootstrapped by `bootstrap:amd-persistent`; that job fails if `do-agent` is not active. Metrics can take a few minutes to appear after the agent starts. For immediate live GPU proof during a render, SSH to the worker and run `watch -n 1 rocm-smi`.
+
 ## API
 
 `POST /api/story-jobs`

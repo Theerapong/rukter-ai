@@ -6,6 +6,34 @@ source /etc/rukter-amd-worker.env
 ROCM_WORKER_IMAGE="${ROCM_WORKER_IMAGE:-rocm/pytorch:latest}"
 
 install -d -m 0755 /opt/rukter /var/lib/rukter-models /var/lib/rukter-outputs
+
+install_digitalocean_metrics_agent() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemd is unavailable; skipping DigitalOcean metrics agent install." >&2
+    return 0
+  fi
+  if systemctl is-active --quiet do-agent 2>/dev/null; then
+    echo "DigitalOcean metrics agent is already active."
+    return 0
+  fi
+
+  echo "Installing DigitalOcean metrics agent for Droplet and GPU Insights."
+  if curl -fsSL https://repos.insights.digitalocean.com/install.sh -o /tmp/do-agent-install.sh; then
+    bash /tmp/do-agent-install.sh || echo "DigitalOcean metrics agent installer failed; worker bootstrap will continue." >&2
+    rm -f /tmp/do-agent-install.sh
+  else
+    echo "Could not download DigitalOcean metrics agent installer; worker bootstrap will continue." >&2
+  fi
+  systemctl enable --now do-agent 2>/dev/null || true
+  if systemctl is-active --quiet do-agent 2>/dev/null; then
+    echo "DigitalOcean metrics agent is active."
+  else
+    echo "DigitalOcean metrics agent is not active yet; GPU rendering can continue but Insights may show No Data." >&2
+  fi
+}
+
+install_digitalocean_metrics_agent
+
 for file in app.py identity_guard.py requirements.txt run_story_pipeline.py run_story_pipeline.sh; do
   if ! curl -fsSL "${RUKTER_WORKER_SOURCE_BASE%/}/${file}?v=${WORKER_VERSION:-unknown}" -o "/opt/rukter/${file}.download"; then
     if [[ ! -s "/opt/rukter/${file}" ]]; then

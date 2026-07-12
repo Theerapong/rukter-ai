@@ -209,7 +209,6 @@ terraform:apply:digitalocean:
     - terraform:plan:digitalocean
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
   script:
     - terraform -chdir="${TF_DO_ENV_DIR}" init -input=false
     - terraform -chdir="${TF_DO_ENV_DIR}" apply -parallelism=20 -auto-approve tfplan
@@ -226,8 +225,6 @@ bootstrap:amd-persistent:
     - terraform:apply:digitalocean
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-      allow_failure: true
   script:
     - bash scripts/bootstrap-persistent-amd.sh
 
@@ -249,7 +246,6 @@ verify:public-image:
     DOCKER_HOST: unix:///var/run/docker.sock
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
   script:
     - docker logout ghcr.io || true
     - docker buildx imagetools inspect "${PUBLIC_CONTAINER_IMAGE}"

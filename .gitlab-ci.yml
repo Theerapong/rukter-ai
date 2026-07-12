@@ -96,6 +96,7 @@ docker:amd64-build:
 
 build:docr:digitalocean:
   stage: package
+  resource_group: rukter-ai-terraform-digitalocean
   services: []
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
@@ -110,9 +111,6 @@ build:docr:digitalocean:
       DO_API="https://api.digitalocean.com/v2"
       REGISTRIES_JSON="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "${DO_API}/registries")"
       REGISTRY_NAME="$(printf '%s' "${REGISTRIES_JSON}" | jq -r --arg name "${DOCR_REGISTRY_NAME}" '.registries[]? | select(.name == $name) | .name' | head -n 1)"
-      if [ -z "${REGISTRY_NAME}" ]; then
-        REGISTRY_NAME="$(printf '%s' "${REGISTRIES_JSON}" | jq -r '.registries[0].name // empty')"
-      fi
       test -n "${REGISTRY_NAME}"
       ACCOUNT_EMAIL="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "${DO_API}/account" | jq -r '.account.email // empty')"
       test -n "${ACCOUNT_EMAIL}"
@@ -121,7 +119,20 @@ build:docr:digitalocean:
       export DOCR_IMAGE_URI="registry.digitalocean.com/${DOCR_REGISTRY_NAME}/${DOCR_REPOSITORY_NAME}:${DOCR_IMAGE_TAG}"
       printf '%s' "${DIGITALOCEAN_TOKEN}" | docker login registry.digitalocean.com --username "${ACCOUNT_EMAIL}" --password-stdin
     - docker buildx create --use --name rukter-ai-docr-builder || docker buildx use rukter-ai-docr-builder
-    - docker buildx build --platform linux/amd64 --push -t "${DOCR_IMAGE_URI}" .
+    - |
+      set -o pipefail
+      build_log="$(mktemp)"
+      trap 'rm -f "${build_log}"' EXIT
+      if docker buildx build --platform linux/amd64 --provenance=false --push -t "${DOCR_IMAGE_URI}" . 2>&1 | tee "${build_log}"; then
+        :
+      elif grep -Eiq 'quota[[:space:]]+exceeded' "${build_log}"; then
+        echo "DOCR quota is full; pruning stale manifests while preserving the active deployment and recent manifests."
+        bash scripts/prune-docr-repository.sh
+        printf '%s' "${DIGITALOCEAN_TOKEN}" | docker login registry.digitalocean.com --username "${ACCOUNT_EMAIL}" --password-stdin
+        docker buildx build --platform linux/amd64 --provenance=false --push -t "${DOCR_IMAGE_URI}" .
+      else
+        exit 1
+      fi
     - docker buildx imagetools inspect "${DOCR_IMAGE_URI}"
     - printf 'DOCR_REGISTRY_NAME=%s\nDOCR_REPOSITORY_NAME=%s\nDOCR_IMAGE_TAG=%s\nDOCR_IMAGE_URI=%s\n' "${DOCR_REGISTRY_NAME}" "${DOCR_REPOSITORY_NAME}" "${DOCR_IMAGE_TAG}" "${DOCR_IMAGE_URI}" > digitalocean-build.env
   artifacts:

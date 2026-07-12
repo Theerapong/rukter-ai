@@ -20,7 +20,8 @@ repository_path="$(jq -rn --arg value "${DOCR_REPOSITORY_NAME}" '$value | @uri')
 registry_path="$(jq -rn --arg value "${DOCR_REGISTRY_NAME}" '$value | @uri')"
 active_gc_file="$(mktemp)"
 post_gc_file="$(mktemp)"
-trap 'rm -f "${active_gc_file}" "${post_gc_file}"' EXIT
+delete_response_file="$(mktemp)"
+trap 'rm -f "${active_gc_file}" "${post_gc_file}" "${delete_response_file}"' EXIT
 
 api_get() {
   curl --retry 3 --retry-all-errors -fsS -H "${auth_header}" "$1"
@@ -185,12 +186,30 @@ protected_digests="$(printf '%s' "${ordered_manifests}" | jq -c \
   --arg active_digest "${active_digest}" \
   --arg active_updated_at "${active_updated_at}" \
   --argjson rollback_count "${DOCR_RETAIN_ROLLBACK_MANIFESTS}" '
-    ([.[] | select(.digest == $active_digest or .updated_at == $active_updated_at) | .digest]
+    . as $manifests
+    | ($manifests | map(.digest)) as $all_digests
+    | ([.[] | select(.digest == $active_digest or .updated_at == $active_updated_at) | .digest]
       + ([.[] | select(.digest != $active_digest and .updated_at != $active_updated_at) | .digest][: $rollback_count]))
-    | unique
+    | unique as $seed
+    | ($seed + [
+        $manifests[]
+        | select(.digest as $digest | ($seed | index($digest)) != null)
+        | .blobs[]?.digest as $reference
+        | select(($all_digests | index($reference)) != null)
+        | $reference
+      ]) | unique
   ')"
 candidates="$(printf '%s' "${ordered_manifests}" | jq -c --argjson protected "${protected_digests}" \
-  '[.[] | select(.digest as $digest | ($protected | index($digest)) == null)]')"
+  '[.[] | select(.digest as $digest | ($protected | index($digest)) == null)]
+   | . as $candidates
+   | ($candidates | map(.digest)) as $candidate_digests
+   | map(. + {
+       manifestReferenceCount: ([.blobs[]?.digest as $reference
+         | select(($candidate_digests | index($reference)) != null)
+         | $reference] | length)
+     })
+   | sort_by(.manifestReferenceCount, .updated_at)
+   | reverse')"
 candidate_count="$(printf '%s' "${candidates}" | jq 'length')"
 echo "DOCR has ${collected} manifests; preserving active digest ${active_digest:0:19}, its deployment batch, and ${DOCR_RETAIN_ROLLBACK_MANIFESTS} recent manifests."
 
@@ -224,17 +243,42 @@ fi
 if (( candidate_count == 0 )); then
   echo "No stale manifest is outside the protected set; garbage collecting only unreferenced blobs."
 else
-  while IFS=$'\t' read -r digest tags updated_at; do
-    [[ -n "${digest}" ]] || continue
-    echo "Deleting stale DOCR manifest ${digest:0:19} (${tags:-untagged}, ${updated_at})."
-    status_code="$(curl --retry 3 --retry-all-errors -sS -o /dev/null -w '%{http_code}' \
-      -X DELETE -H "${auth_header}" \
-      "${DO_API}/registries/${registry_path}/repositories/${repository_path}/digests/${digest}")"
-    if [[ "${status_code}" != "204" ]]; then
-      echo "Manifest deletion failed with HTTP ${status_code}; stopping before garbage collection." >&2
+  pending="${candidates}"
+  for pass in $(seq 1 "${candidate_count}"); do
+    deferred='[]'
+    deleted_this_pass=0
+    while IFS= read -r manifest; do
+      [[ -n "${manifest}" ]] || continue
+      digest="$(printf '%s' "${manifest}" | jq -r '.digest')"
+      tags="$(printf '%s' "${manifest}" | jq -r '(.tags // []) | join(",")')"
+      updated_at="$(printf '%s' "${manifest}" | jq -r '.updated_at')"
+      echo "Deleting stale DOCR manifest ${digest:0:19} (${tags:-untagged}, ${updated_at})."
+      status_code="$(curl --retry 3 --retry-all-errors -sS -o "${delete_response_file}" -w '%{http_code}' \
+        -X DELETE -H "${auth_header}" \
+        "${DO_API}/registries/${registry_path}/repositories/${repository_path}/digests/${digest}")"
+      if [[ "${status_code}" == "204" ]]; then
+        ((deleted_this_pass += 1))
+      elif [[ "${status_code}" == "412" ]]; then
+        delete_message="$(jq -r '.message // .id // "precondition failed"' "${delete_response_file}" 2>/dev/null || true)"
+        echo "Deferring referenced manifest ${digest:0:19}: ${delete_message:-precondition failed}."
+        deferred="$(jq -cn --argjson current "${deferred}" --argjson item "${manifest}" '$current + [$item]')"
+      else
+        delete_message="$(jq -r '.message // .id // "request failed"' "${delete_response_file}" 2>/dev/null || true)"
+        echo "Manifest deletion failed with HTTP ${status_code}: ${delete_message:-request failed}." >&2
+        exit 1
+      fi
+    done < <(printf '%s' "${pending}" | jq -c '.[]')
+
+    remaining="$(printf '%s' "${deferred}" | jq 'length')"
+    if (( remaining == 0 )); then
+      break
+    fi
+    if (( deleted_this_pass == 0 )); then
+      echo "${remaining} stale manifests remain referenced after pass ${pass}; refusing unsafe deletion." >&2
       exit 1
     fi
-  done < <(printf '%s' "${candidates}" | jq -r '.[] | [.digest, ((.tags // []) | join(",")), .updated_at] | @tsv')
+    pending="${deferred}"
+  done
 fi
 
 set +e

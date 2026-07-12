@@ -7,6 +7,7 @@ import {
   createStoryActivity,
   normalizeStoryRequest,
   normalizeStoryStyle,
+  productStoryLimits,
   productStorySteps,
   shouldSyncAmdQueuePreparation,
 } from '../lib/product-story.mjs'
@@ -32,6 +33,21 @@ test('normalizes Product Story requests to portable source images', () => {
 
 test('falls back to a safe video style for unknown style ids', () => {
   assert.equal(normalizeStoryStyle('unknown'), 'cinematic_film')
+})
+
+test('accepts one source photo for a Product Story', () => {
+  assert.equal(productStoryLimits.minImages, 1)
+  const plan = buildProductStoryPlan({
+    request: { mode: 'fast_story', sourceImages: [sources[0]] },
+    kit: {
+      productAnalysis: { productType: 'Serum bottle', visibleDetails: ['Front label'] },
+      hero: { headline: 'Single view story', primaryCta: 'Explore product' },
+      brandAngle: {},
+    },
+  })
+  assert.equal(plan.shots.length, 1)
+  assert.equal(plan.shots[0].sourceId, sources[0].id)
+  assert.equal(plan.identityGuard.generativeProductAlteration, false)
 })
 
 test('does not regress an active AMD job back into capacity checking', () => {

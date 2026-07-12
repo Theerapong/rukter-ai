@@ -16,7 +16,7 @@ Track 3 - Unicorn (Open Innovation)
 
 ## Product Thesis
 
-Generic AI site builders already create attractive pages. Rukter focuses on a harder commerce problem: producing reusable product motion without changing the product, packaging text, or logo. A seller uploads three to eight photos. Fireworks Vision analyzes visible evidence and directs a multi-shot story. Motion Preview animates the exact source photos in the browser for zero GPU cost. AMD Cinematic provisions an ephemeral ROCm worker to generate separate Wan 2.2 clips, reject identity drift, and compose an MP4.
+Generic AI site builders already create attractive pages. Rukter focuses on a harder commerce problem: producing reusable product motion without changing the product, packaging text, or logo. A seller uploads one to eight photos. Fireworks Vision analyzes visible evidence and directs a source-grounded story. Motion Preview animates the exact source photos in the browser for zero GPU cost. AMD Cinematic provisions an ephemeral ROCm worker to generate separate Wan 2.2 clips, reject identity drift, and compose an MP4.
 
 The user can see the entire system: upload, vision analysis, storyboard, GPU provision, motion shots, identity check, composition, and GPU release. The runtime inspector shows the current worker, billing state, output, and `destroy_after_job` policy. Failure never becomes an invisible spinner or a mislabeled browser fallback; it becomes a visible failed activity.
 
@@ -32,7 +32,7 @@ The user can see the entire system: upload, vision analysis, storyboard, GPU pro
 ## Demo Script
 
 1. Open `rukter.ai`; show that the first screen has no sample image and AMD GPU is offline.
-2. Upload three to eight views of one real product.
+2. Upload one to eight views of one real product.
 3. Select Motion Preview and start the job.
 4. Show all eight activities updating in the workspace.
 5. Play the directed 9:16 preview and switch shots from the source timeline.

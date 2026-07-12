@@ -53,8 +53,8 @@ const releaseGpuButton = $('#releaseGpuButton')
 const exportStatus = $('#exportStatus')
 const toast = $('#toast')
 
-const minImages = 3
-const maxImages = 8
+const fallbackStoryLimits = Object.freeze({ minImages: 1, maxImages: 8 })
+let storyLimits = { ...fallbackStoryLimits }
 const maxImageBytes = 4_000_000
 const labels = ['Front', 'Angle', 'Side', 'Back', 'Detail', 'Texture', 'Scale', 'Hero']
 const terminalStates = new Set(['ready', 'failed', 'cancelled'])
@@ -107,6 +107,22 @@ function formatBytes(bytes) {
   return bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} KB`
 }
 
+function formatPhotoCount(count) {
+  return `${count} photo${count === 1 ? '' : 's'}`
+}
+
+function formatMissingPhotos(count) {
+  return `Add ${count} more photo${count === 1 ? '' : 's'}.`
+}
+
+function setStoryLimits(value) {
+  storyLimits = {
+    minImages: Math.max(1, Math.min(8, Number(value?.minImages) || fallbackStoryLimits.minImages)),
+    maxImages: Math.max(1, Math.min(8, Number(value?.maxImages) || fallbackStoryLimits.maxImages)),
+  }
+  if (storyLimits.minImages > storyLimits.maxImages) storyLimits.minImages = storyLimits.maxImages
+}
+
 function selectedMode() {
   return document.querySelector('input[name="storyMode"]:checked')?.value || 'fast_story'
 }
@@ -118,7 +134,7 @@ function selectedStyle() {
 function updateGenerateAvailability() {
   const cinematicUnavailable = selectedMode() === 'amd_cinematic'
     && !config.amdGpuPublicEnabled
-  generateButton.disabled = sources.length < minImages || cinematicUnavailable
+  generateButton.disabled = sources.length < storyLimits.minImages || cinematicUnavailable
   generateButton.querySelector('span').textContent = cinematicUnavailable
     ? 'AMD Cinematic is offline'
     : selectedMode() === 'amd_cinematic'
@@ -256,10 +272,10 @@ async function normalizeImage(file) {
 }
 
 async function addFiles(fileList) {
-  const remaining = maxImages - sources.length
+  const remaining = storyLimits.maxImages - sources.length
   const selected = [...fileList].slice(0, remaining)
   if (!selected.length) {
-    showToast(`A Product Story accepts up to ${maxImages} photos.`)
+    showToast(`A Product Story accepts up to ${formatPhotoCount(storyLimits.maxImages)}.`)
     return
   }
   addPhotosButton.disabled = true
@@ -312,13 +328,13 @@ function renderSources() {
     tile.append(image, label, remove)
     return tile
   }))
-  const ready = sources.length >= minImages
+  const ready = sources.length >= storyLimits.minImages
   sourceRequirement.textContent = ready
-    ? `${sources.length} source photos ready${sources.length === maxImages ? ' · maximum reached' : ''}.`
-    : `Add ${minImages - sources.length} more photo${minImages - sources.length === 1 ? '' : 's'}.`
+    ? `${sources.length} source photo${sources.length === 1 ? '' : 's'} ready${sources.length === storyLimits.maxImages ? ' · maximum reached' : ''}.`
+    : formatMissingPhotos(storyLimits.minImages - sources.length)
   sourceRequirement.classList.toggle('is-ready', ready)
   updateGenerateAvailability()
-  addPhotosButton.hidden = sources.length >= maxImages
+  addPhotosButton.hidden = sources.length >= storyLimits.maxImages
 }
 
 async function uploadSource(source) {
@@ -710,7 +726,7 @@ async function pollJob(id) {
 }
 
 async function createStory() {
-  if (sources.length < minImages) return
+  if (sources.length < storyLimits.minImages) return
   generateButton.disabled = true
   generateButton.querySelector('span').textContent = 'Uploading source views…'
   try {
@@ -999,6 +1015,8 @@ async function loadConfig() {
   try {
     const response = await fetch('/api/config')
     config = await response.json()
+    setStoryLimits(config.storyLimits)
+    renderSources()
     if (config.amdGpuPublicEnabled) await checkGpuCapacity()
     else renderCapacity(config)
   } catch {

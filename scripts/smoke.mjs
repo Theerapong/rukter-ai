@@ -24,7 +24,7 @@ if (config.gpuQueuePolicy !== 'fifo' || config.gpuQueueConcurrency !== 1 || conf
 if (config.gpuPersistentPolicy !== 'retain_tagged_worker' || config.amdGpuPersistentTag !== 'rukter-product-story-persistent') {
   throw new Error('Persistent AMD GPU retention contract is not configured.')
 }
-if (config.storyLimits?.minImages !== 3 || config.storyLimits?.maxImages !== 8) {
+if (config.storyLimits?.minImages !== 1 || config.storyLimits?.maxImages !== 8) {
   throw new Error('Product Story source image limits are incorrect.')
 }
 const captureRuntime = await fetch(`${baseUrl}/vendor/html2canvas.min.js`, { signal: AbortSignal.timeout(5_000) })
@@ -79,6 +79,34 @@ if (storyJob.activity.find((step) => step.id === 'release_gpu')?.status !== 'ski
 }
 if (storyJob.activity.find((step) => step.id === 'gpu_queue')?.status !== 'skipped') {
   throw new Error('Fast Product Story unexpectedly entered the AMD render queue.')
+}
+
+const onePhotoStoryResponse = await fetch(`${baseUrl}/api/story-jobs`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    mode: 'fast_story',
+    aspect: '9:16',
+    durationSeconds: 15,
+    market: 'Global',
+    productImage: { ...storySourceImages[0], dataUrl: demoDataUrl },
+    sourceImages: [storySourceImages[0]],
+  }),
+  signal: AbortSignal.timeout(5_000),
+})
+let onePhotoStoryJob = await onePhotoStoryResponse.json()
+if (onePhotoStoryResponse.status !== 202 || !onePhotoStoryJob.id) {
+  throw new Error(`One-photo Product Story job creation failed: ${JSON.stringify(onePhotoStoryJob)}`)
+}
+const onePhotoDeadline = Date.now() + 12_000
+while (!['ready', 'failed', 'cancelled'].includes(onePhotoStoryJob.status) && Date.now() < onePhotoDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const statusResponse = await fetch(`${baseUrl}/api/story-jobs/${encodeURIComponent(onePhotoStoryJob.id)}`, { signal: AbortSignal.timeout(5_000) })
+  onePhotoStoryJob = await statusResponse.json()
+}
+if (onePhotoStoryJob.status !== 'ready') throw new Error(`One-photo Product Story did not complete: ${JSON.stringify(onePhotoStoryJob)}`)
+if (onePhotoStoryJob.plan?.shots?.length !== 1 || onePhotoStoryJob.totalShots !== 1) {
+  throw new Error('One-photo Product Story did not produce a single source-preserving shot.')
 }
 
 const unavailableCinematicResponse = await fetch(`${baseUrl}/api/story-jobs`, {

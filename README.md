@@ -10,7 +10,7 @@ This public repository contains only the standalone `rukter.ai` hackathon applic
 
 Never commit API keys, cloud tokens, SSH private keys, Terraform state, or runtime `.env` files. Production credentials are supplied only through protected, masked GitLab CI/CD variables and secret runtime environment values. `.env.example` contains names and non-secret placeholders only.
 
-It turns three to eight real product photos into a directed story. Fireworks Vision identifies the product and writes evidence-aware story copy. Motion Preview animates source photos in the browser and exports a portable WebM without GPU cost. AMD Cinematic creates multiple 3-5 second Wan 2.2 image-to-video shots on ROCm, verifies product identity per shot, and composes the accepted clips into a cinematic MP4.
+It turns one to eight real product photos into a directed story. Fireworks Vision identifies the product and writes evidence-aware story copy. Motion Preview animates source photos in the browser and exports a portable WebM without GPU cost. AMD Cinematic creates one or more 3-5 second Wan 2.2 image-to-video shots on ROCm, verifies product identity per shot, and composes the accepted clips into a cinematic MP4.
 
 The default screen has no sample product. The primary flow is deliberately short: **upload views -> choose direction -> direct story -> export**. The workspace exposes all eight job activities, current progress, source-photo timeline, identity guard, worker state, GPU billing state, and release status.
 
@@ -203,7 +203,7 @@ The repo includes Terraform at `infra/terraform/environments/digitalocean` for t
 
 `POST /api/story-jobs`
 
-Starts an asynchronous Product Story job from three to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the nine-step activity log, model provenance, image observations, directed Wan prompts, FIFO queue position, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` removes a waiting job or cancels and releases an active job. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
+Starts an asynchronous Product Story job from one to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the nine-step activity log, model provenance, image observations, directed Wan prompts, FIFO queue position, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` removes a waiting job or cancels and releases an active job. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
 
 The browser polls this job API, so a cinematic generation can take longer than the synchronous request limit without hiding progress or timing out the page. Job creation and status responses remain well under 30 seconds.
 

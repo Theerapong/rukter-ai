@@ -10,7 +10,7 @@ The cloud-init bootstrap installs `run_story_pipeline.sh`, which accepts:
 run_story_pipeline.sh /tmp/input.json /tmp/output.json
 ```
 
-The input follows `rukter.product_story.v1` and contains three to eight public source image URLs. The output must contain:
+The input follows `rukter.product_story.v1` and contains one to eight public source image URLs. The output must contain:
 
 ```json
 {

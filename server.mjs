@@ -95,6 +95,11 @@ const amdStoryQueue = createSerialJobQueue({
   onChange: syncAmdStoryQueueState,
   onError: handleUnexpectedAmdQueueError,
 })
+
+function formatCount(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
 const freeformCreativePageSchema = 'rukter.freeform_creative_page.v4'
 const launchKitResponseFormat = {
   type: 'json_schema',
@@ -2485,7 +2490,7 @@ async function processStoryJob(jobId) {
   const controller = job.controller || new AbortController()
   job.controller = controller
   try {
-    updateStoryStep(job, 'source_upload', 'completed', `${job.request.sourceImages.length} source photos stored`)
+    updateStoryStep(job, 'source_upload', 'completed', `${formatCount(job.request.sourceImages.length, 'source photo')} stored`)
     job.status = 'analyzing'
     updateStoryStep(job, 'vision_analysis', 'active', `Sending ${job.request.sourceImages.length} product views to Fireworks AI`, 10)
     const generated = await buildStoryLaunchKit(job.input)
@@ -2557,7 +2562,7 @@ async function handleCreateStoryJob(req, res) {
       return
     }
     if (request.sourceImages.length < productStoryLimits.minImages) {
-      sendJson(res, 400, { error: `Upload at least ${productStoryLimits.minImages} product photos.` })
+      sendJson(res, 400, { error: `Upload at least ${formatCount(productStoryLimits.minImages, 'product photo')}.` })
       return
     }
     const input = sanitizeLaunchInput({

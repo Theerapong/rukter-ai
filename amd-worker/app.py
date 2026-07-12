@@ -55,7 +55,7 @@ def concise_pipeline_failure(stdout: str, stderr: str) -> str:
 
 class StoryRequest(BaseModel):
     story: dict
-    sourceImages: list[dict] = Field(min_length=3, max_length=8)
+    sourceImages: list[dict] = Field(min_length=1, max_length=8)
 
 
 def require_token(authorization: str | None) -> None:

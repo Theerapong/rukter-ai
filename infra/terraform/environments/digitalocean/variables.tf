@@ -153,6 +153,18 @@ variable "amd_gpu_lease_ttl_seconds" {
   default     = 1800
 }
 
+variable "amd_gpu_queue_max_size" {
+  type        = number
+  description = "Maximum number of active and waiting AMD Cinematic jobs accepted by the single FIFO render queue."
+  default     = 25
+}
+
+variable "amd_gpu_capacity_poll_ms" {
+  type        = number
+  description = "Delay between capacity retries for the first queued job; retries do not create a billed GPU."
+  default     = 30000
+}
+
 variable "amd_gpu_worker_source_base_url" {
   type        = string
   description = "Public source URL used by cloud-init to bootstrap the AMD cinematic worker."

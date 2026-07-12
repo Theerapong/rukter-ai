@@ -66,11 +66,12 @@ test('directs AMD Cinematic as verified multi-clip generation rather than browse
   assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'reference_constrained_and_verified'))
 })
 
-test('creates an eight-step observable activity contract', () => {
+test('creates a nine-step observable activity contract with an explicit GPU queue', () => {
   const activity = createStoryActivity()
   assert.equal(activity.length, productStorySteps.length)
-  assert.deepEqual(activity.map((step) => step.status), Array(8).fill('pending'))
+  assert.deepEqual(activity.map((step) => step.status), Array(9).fill('pending'))
   assert.equal(activity.find((step) => step.id === 'vision_analysis').label, 'Fireworks vision brief')
+  assert.equal(activity.find((step) => step.id === 'gpu_queue').label, 'AMD render queue')
   assert.equal(activity.find((step) => step.id === 'motion_shots').label, 'Text-guided video generation')
 })
 

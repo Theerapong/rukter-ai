@@ -41,6 +41,7 @@ const fullscreenButton = $('#fullscreenButton')
 const timeline = $('#timeline')
 const jobId = $('#jobId')
 const jobMode = $('#jobMode')
+const queueState = $('#queueState')
 const workerState = $('#workerState')
 const gpuState = $('#gpuState')
 const billingState = $('#billingState')
@@ -96,12 +97,14 @@ function selectedStyle() {
 
 function updateGenerateAvailability() {
   const cinematicUnavailable = selectedMode() === 'amd_cinematic'
-    && (!config.amdGpuPublicEnabled || !['available', 'requestable'].includes(config.amdGpuCapacityState))
+    && !config.amdGpuPublicEnabled
   generateButton.disabled = sources.length < minImages || cinematicUnavailable
   generateButton.querySelector('span').textContent = cinematicUnavailable
     ? 'AMD Cinematic is offline'
     : selectedMode() === 'amd_cinematic'
-      ? 'Start AMD GPU & Direct Story'
+      ? ['available', 'requestable'].includes(config.amdGpuCapacityState)
+        ? 'Queue AMD Cinematic Story'
+        : 'Join AMD Render Queue'
       : 'Direct Product Story'
 }
 
@@ -111,21 +114,26 @@ function renderCapacity(capacity = config) {
   const requestable = state === 'requestable' || capacity.requestable === true
   const publicEnabled = capacity.publicEnabled ?? capacity.amdGpuPublicEnabled ?? false
   const canStart = (available || requestable) && publicEnabled
+  const canQueue = publicEnabled
   const reason = capacity.reason || capacity.amdGpuAvailabilityReason || ''
   config.amdGpuCapacityState = state
   config.amdGpuAvailabilityReason = reason
   config.amdGpuPublicEnabled = publicEnabled
-  amdModeState.textContent = canStart ? requestable ? 'On demand' : 'Available' : available || requestable ? 'Owner locked' : 'No capacity'
-  amdModeInput.disabled = !canStart
-  amdModeOption.classList.toggle('is-disabled', !canStart)
+  amdModeState.textContent = canStart ? requestable ? 'On demand' : 'Available' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
+  amdModeInput.disabled = !canQueue
+  amdModeOption.classList.toggle('is-disabled', !canQueue)
   amdModeState.title = canStart
     ? 'AMD GPU starts on demand and is destroyed after the job.'
-    : reason || 'AMD Cinematic is unavailable.'
-  capacityState.textContent = canStart ? requestable ? 'On demand' : 'Ready' : available || requestable ? 'Locked' : 'Unavailable'
-  capacityButton.classList.toggle('is-ready', canStart)
-  computeBadge.classList.toggle('is-safe', canStart)
+    : canQueue
+      ? 'The FIFO queue accepts the job and waits without GPU billing until capacity returns.'
+      : reason || 'AMD Cinematic is unavailable.'
+  capacityState.textContent = canStart ? requestable ? 'On demand' : 'Ready' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
+  capacityButton.classList.toggle('is-ready', canStart || canQueue)
+  computeBadge.classList.toggle('is-safe', canStart || canQueue)
   computeBadge.querySelector('span').textContent = canStart
     ? requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
+    : canQueue
+      ? 'AMD FIFO queue ready'
     : available
       ? 'AMD GPU owner locked'
       : requestable
@@ -133,12 +141,14 @@ function renderCapacity(capacity = config) {
         : 'AMD capacity unavailable'
   computeNote.textContent = canStart
     ? requestable
-      ? 'Select AMD Cinematic to create one MI300X on demand. Billing starts only if provisioning succeeds and stops when the Droplet is destroyed.'
-      : 'Select AMD Cinematic, then start the job. Billing begins only after the Droplet request and stops when it is destroyed.'
+      ? 'AMD Cinematic jobs enter one FIFO queue. Billing starts only when this job provisions the MI300X and stops when the Droplet is destroyed.'
+      : 'AMD Cinematic jobs render one at a time. Waiting jobs do not start GPU billing.'
+    : canQueue
+      ? `${reason || 'AMD capacity is temporarily unavailable.'} The job can wait in FIFO order with no GPU billing.`
     : requestable
       ? `${reason} The owner safety switch is off.`
       : reason || 'AMD Cinematic is unavailable. Checking capacity never starts GPU billing.'
-  if (!canStart && selectedMode() === 'amd_cinematic') document.querySelector('input[value="fast_story"]').checked = true
+  if (!canQueue && selectedMode() === 'amd_cinematic') document.querySelector('input[value="fast_story"]').checked = true
   updateGenerateAvailability()
 }
 
@@ -298,6 +308,7 @@ function initialActivity() {
     ['source_upload', 'Source upload'],
     ['vision_analysis', 'Fireworks vision brief'],
     ['storyboard', 'Video prompt direction'],
+    ['gpu_queue', 'AMD render queue'],
     ['gpu_provision', 'AMD GPU provision'],
     ['motion_shots', 'Text-guided video generation'],
     ['identity_check', 'Product identity check'],
@@ -477,7 +488,28 @@ function showShot(index, animate = true) {
 }
 
 function friendlyStatus(status) {
-  return ({ queued: 'Queued', analyzing: 'Understanding product', gpu_starting: 'Starting AMD GPU', generating: 'Directing story', ready: 'Story ready', failed: 'Job failed', cancelled: 'Cancelled' })[status] || status
+  return ({
+    queued: 'Queued',
+    analyzing: 'Understanding product',
+    waiting_for_gpu: 'Waiting in AMD queue',
+    gpu_starting: 'Starting AMD GPU',
+    generating: 'Directing story',
+    cancelling: 'Releasing AMD GPU',
+    ready: 'Story ready',
+    failed: 'Job failed',
+    cancelled: 'Cancelled',
+  })[status] || status
+}
+
+function friendlyQueue(queue) {
+  if (!queue || queue.state === 'not_required') return 'Not required'
+  if (queue.state === 'complete') return 'Complete'
+  if (queue.state === 'cancelled') return 'Cancelled'
+  if (queue.state === 'failed') return 'Ended'
+  if (queue.state === 'active') return 'Rendering now'
+  if (queue.state === 'checking_capacity' || queue.state === 'capacity_wait') return 'Next · waiting for capacity'
+  if (queue.position) return `#${queue.position} · ${queue.jobsAhead} ahead`
+  return 'Preparing'
 }
 
 function renderJob(job) {
@@ -490,8 +522,12 @@ function renderJob(job) {
   stageKicker.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
   jobMode.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
   storyStyleState.textContent = job.plan?.styleLabel || 'Cinematic Product Film'
-  workerState.textContent = job.effectiveMode === 'amd_cinematic' ? (job.gpu?.device || 'AMD worker') : 'Browser compositor'
-  gpuState.textContent = job.gpu?.status ? job.gpu.status.replaceAll('_', ' ') : 'Offline'
+  queueState.textContent = friendlyQueue(job.queue)
+  const waitingForGpu = ['preparing', 'waiting', 'checking_capacity', 'capacity_wait'].includes(job.queue?.state)
+  workerState.textContent = job.effectiveMode === 'amd_cinematic'
+    ? waitingForGpu ? 'AMD FIFO queue' : (job.gpu?.device || 'AMD worker')
+    : 'Browser compositor'
+  gpuState.textContent = waitingForGpu ? 'Not started' : job.gpu?.status ? job.gpu.status.replaceAll('_', ' ') : 'Offline'
   const gpuBillingActive = job.gpu?.billing === 'active_for_job'
   const gpuBillingUncertain = job.gpu?.billing === 'possibly_active'
   billingState.textContent = gpuBillingActive ? 'Active for job' : gpuBillingUncertain ? 'Release required' : 'Inactive'
@@ -499,9 +535,11 @@ function renderJob(job) {
   billingState.classList.toggle('safe', !gpuBillingActive && !gpuBillingUncertain)
   outputState.textContent = job.output?.status === 'ready' ? `${job.output.width} × ${job.output.height}` : 'Waiting'
   computeBadge.classList.toggle('is-active', gpuBillingActive || gpuBillingUncertain)
-  computeBadge.classList.toggle('is-safe', job.gpu?.status === 'released')
+  computeBadge.classList.toggle('is-safe', waitingForGpu || job.gpu?.status === 'released')
   computeBadge.querySelector('span').textContent = gpuBillingActive || gpuBillingUncertain
     ? gpuBillingUncertain ? 'Release GPU' : 'AMD GPU active'
+    : waitingForGpu
+      ? job.queue?.position ? `AMD queue #${job.queue.position}` : 'AMD queue next'
     : job.gpu?.status === 'released' ? 'AMD GPU released' : 'AMD GPU offline'
   jobWarning.hidden = !job.warning && !job.error
   jobWarning.textContent = job.error || job.warning || ''
@@ -524,6 +562,9 @@ function renderJob(job) {
       if (!timeline.children.length) renderTimeline(job.plan)
       if (!storyImage.src) showShot(0, false)
     }
+  }
+  if (waitingForGpu) {
+    exportStatus.textContent = job.queue?.note || 'Waiting in FIFO order. GPU billing has not started.'
   }
   if (ready) exportStatus.textContent = job.output?.videoUrl
     ? 'AMD video output is ready. The GPU lease has been released.'
@@ -684,6 +725,7 @@ function exportStoryboard() {
       id: currentJob.id,
       mode: currentJob.effectiveMode,
       gpu: { status: currentJob.gpu.status, billing: currentJob.gpu.billing, releasePolicy: currentJob.gpu.releasePolicy },
+      queue: currentJob.queue,
     },
   }
   downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), 'rukter-product-story.json')

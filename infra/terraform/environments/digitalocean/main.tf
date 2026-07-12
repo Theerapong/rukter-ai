@@ -25,6 +25,8 @@ locals {
     AMD_GPU_SSH_KEY_FINGERPRINT    = var.amd_gpu_ssh_key_fingerprint
     AMD_GPU_SSH_KEY_NAME           = var.amd_gpu_ssh_key_name
     AMD_GPU_LEASE_TTL_SECONDS      = tostring(var.amd_gpu_lease_ttl_seconds)
+    AMD_GPU_QUEUE_MAX_SIZE         = tostring(var.amd_gpu_queue_max_size)
+    AMD_GPU_CAPACITY_POLL_MS       = tostring(var.amd_gpu_capacity_poll_ms)
     AMD_GPU_WORKER_SOURCE_BASE_URL = var.amd_gpu_worker_source_base_url
     AMD_GPU_CAPACITY_STATE         = var.amd_gpu_capacity_state
     AMD_GPU_AVAILABILITY_REASON    = var.amd_gpu_availability_reason

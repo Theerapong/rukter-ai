@@ -18,6 +18,9 @@ if (config.visualCriticRepairPasses !== 2 || config.criticRepairTokens?.length !
 if (!config.productStoryConfigured || config.gpuZeroIdlePolicy !== 'destroy_after_job') {
   throw new Error('Product Story zero-idle runtime contract is not configured.')
 }
+if (config.gpuQueuePolicy !== 'fifo' || config.gpuQueueConcurrency !== 1 || config.gpuQueueCapacity < 1) {
+  throw new Error('Product Story FIFO GPU queue contract is not configured.')
+}
 if (config.storyLimits?.minImages !== 3 || config.storyLimits?.maxImages !== 8) {
   throw new Error('Product Story source image limits are incorrect.')
 }
@@ -62,7 +65,7 @@ while (!['ready', 'failed', 'cancelled'].includes(storyJob.status) && Date.now()
   storyJob = await statusResponse.json()
 }
 if (storyJob.status !== 'ready') throw new Error(`Fast Product Story did not complete: ${JSON.stringify(storyJob)}`)
-if (storyJob.activity?.length !== 8 || storyJob.plan?.shots?.length !== 3) {
+if (storyJob.activity?.length !== 9 || storyJob.plan?.shots?.length !== 3) {
   throw new Error('Product Story did not expose the full activity and storyboard contracts.')
 }
 if (storyJob.gpu?.billing !== 'inactive' || storyJob.gpu?.status !== 'offline') {
@@ -70,6 +73,9 @@ if (storyJob.gpu?.billing !== 'inactive' || storyJob.gpu?.status !== 'offline') 
 }
 if (storyJob.activity.find((step) => step.id === 'release_gpu')?.status !== 'skipped') {
   throw new Error('Fast Product Story did not record the zero-lease release step.')
+}
+if (storyJob.activity.find((step) => step.id === 'gpu_queue')?.status !== 'skipped') {
+  throw new Error('Fast Product Story unexpectedly entered the AMD render queue.')
 }
 
 const unavailableCinematicResponse = await fetch(`${baseUrl}/api/story-jobs`, {

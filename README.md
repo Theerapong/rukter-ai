@@ -203,9 +203,11 @@ The repo includes Terraform at `infra/terraform/environments/digitalocean` for t
 
 `POST /api/story-jobs`
 
-Starts an asynchronous Product Story job from three to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the eight-step activity log, model provenance, image observations, directed Wan prompts, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` cancels work. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
+Starts an asynchronous Product Story job from three to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the nine-step activity log, model provenance, image observations, directed Wan prompts, FIFO queue position, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` removes a waiting job or cancels and releases an active job. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
 
 The browser polls this job API, so a cinematic generation can take longer than the synchronous request limit without hiding progress or timing out the page. Job creation and status responses remain well under 30 seconds.
+
+AMD Cinematic reserves a FIFO position when the API accepts the job. Fireworks product analysis and prompt direction can run concurrently, but the queue has a render concurrency of one from capacity check through GPU destruction. Waiting jobs expose their position and jobs-ahead count, start no GPU billing, and advance automatically after success, failure, cancellation, or verified release. The production App Platform service intentionally runs one `basic-xxs` instance; horizontal scaling requires moving this in-memory queue and lock to a shared durable store.
 
 The production service contains the lease controller described in `infra/amd-gpu-orchestrator/README.md`. Configure its scoped DigitalOcean token and worker token before enabling AMD Cinematic:
 
@@ -218,6 +220,8 @@ export AMD_GPU_SIZE="gpu-mi300x1-192gb-devcloud"
 export AMD_GPU_IMAGE="amddevelopercloud-pytorch2100rocm724"
 export AMD_GPU_VPC_UUID="<region-matched-vpc-uuid>"
 export AMD_GPU_PUBLIC_ENABLED="true"
+export AMD_GPU_QUEUE_MAX_SIZE="25"
+export AMD_GPU_CAPACITY_POLL_MS="30000"
 ```
 
 Keep `AMD_GPU_PUBLIC_ENABLED=false` until one complete create, render, identity-check, and destroy cycle has been observed.

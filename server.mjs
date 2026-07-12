@@ -25,6 +25,7 @@ import {
 } from './lib/product-story.mjs'
 import { runAmdStoryJob } from './lib/amd-story-orchestrator.mjs'
 import { createDigitalOceanGpuOrchestrator } from './lib/digitalocean-gpu-orchestrator.mjs'
+import { createSerialJobQueue } from './lib/serial-job-queue.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const publicDir = path.join(__dirname, 'public')
@@ -32,8 +33,9 @@ const amdWorkerDir = path.join(__dirname, 'amd-worker')
 const uploadDir = path.join(__dirname, '.runtime', 'uploads')
 const port = Number(process.env.PORT || 3017)
 const storyJobs = new Map()
-const activeAmdStoryJobs = new Set()
 const storyJobTtlMs = 60 * 60 * 1000
+const amdStoryQueueMaxSize = Math.max(1, Math.min(100, Number(process.env.AMD_GPU_QUEUE_MAX_SIZE) || 25))
+const amdCapacityPollMs = Math.max(5_000, Math.min(120_000, Number(process.env.AMD_GPU_CAPACITY_POLL_MS) || 30_000))
 const maxBodyBytes = 6_000_000
 const maxUploadBytes = 4_000_000
 const maxVideoUploadBytes = 50_000_000
@@ -85,6 +87,12 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       workerSourceBaseUrl: process.env.AMD_GPU_WORKER_SOURCE_BASE_URL,
     })
   : null
+const amdStoryQueue = createSerialJobQueue({
+  maxSize: amdStoryQueueMaxSize,
+  runJob: processQueuedAmdStoryJob,
+  onChange: syncAmdStoryQueueState,
+  onError: handleUnexpectedAmdQueueError,
+})
 const freeformCreativePageSchema = 'rukter.freeform_creative_page.v4'
 const launchKitResponseFormat = {
   type: 'json_schema',
@@ -2000,7 +2008,31 @@ function storyOrchestratorUrl() {
 function pruneStoryJobs() {
   const cutoff = Date.now() - storyJobTtlMs
   for (const [id, job] of storyJobs) {
-    if (new Date(job.updatedAt).getTime() < cutoff) storyJobs.delete(id)
+    if (['ready', 'failed', 'cancelled'].includes(job.status) && new Date(job.updatedAt).getTime() < cutoff) {
+      storyJobs.delete(id)
+    }
+  }
+}
+
+function publicStoryQueue(job) {
+  const queue = job?.queue
+  if (!queue) return null
+  const enqueuedAtMs = new Date(queue.enqueuedAt || '').getTime()
+  const waitEndedAtMs = new Date(queue.startedAt || queue.completedAt || '').getTime()
+  const waitMs = Number.isFinite(enqueuedAtMs)
+    ? Math.max(0, (Number.isFinite(waitEndedAtMs) ? waitEndedAtMs : Date.now()) - enqueuedAtMs)
+    : 0
+  return {
+    policy: 'fifo',
+    concurrency: 1,
+    state: queue.state,
+    position: Number(queue.position) || 0,
+    jobsAhead: Number(queue.jobsAhead) || 0,
+    enqueuedAt: queue.enqueuedAt || null,
+    startedAt: queue.startedAt || null,
+    completedAt: queue.completedAt || null,
+    waitMs,
+    note: queue.note || '',
   }
 }
 
@@ -2008,7 +2040,7 @@ function publicStoryJob(job) {
   if (!job) return null
   return {
     id: job.id,
-    schema: 'rukter.product_story_job.v1',
+    schema: 'rukter.product_story_job.v2',
     status: job.status,
     requestedMode: job.requestedMode,
     effectiveMode: job.effectiveMode,
@@ -2025,6 +2057,7 @@ function publicStoryJob(job) {
     aiDirection: job.aiDirection || null,
     output: job.output || null,
     gpu: job.gpu,
+    queue: publicStoryQueue(job),
     warning: job.warning || '',
     error: job.error || '',
     createdAt: job.createdAt,
@@ -2052,12 +2085,118 @@ function updateStoryStep(job, stepId, status, detail, progress = null) {
 
 function storyDelay(ms, signal) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms)
-    signal?.addEventListener('abort', () => {
+    const finish = (callback, value) => {
+      signal?.removeEventListener('abort', onAbort)
+      callback(value)
+    }
+    const timer = setTimeout(() => finish(resolve), ms)
+    const onAbort = () => {
       clearTimeout(timer)
-      reject(signal.reason || new Error('Product Story job cancelled.'))
-    }, { once: true })
+      finish(reject, signal.reason || new Error('Product Story job cancelled.'))
+    }
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
   })
+}
+
+function syncAmdStoryQueueState(snapshot) {
+  const pendingById = new Map(snapshot.pending.map((entry, index) => [entry.id, { entry, index }]))
+  const now = new Date().toISOString()
+  for (const job of storyJobs.values()) {
+    if (job.requestedMode !== 'amd_cinematic' || ['ready', 'failed', 'cancelled'].includes(job.status)) continue
+    if (job.id === snapshot.activeId) {
+      job.status = 'waiting_for_gpu'
+      job.queue = {
+        ...job.queue,
+        state: 'checking_capacity',
+        position: 0,
+        jobsAhead: 0,
+        startedAt: job.queue?.startedAt || now,
+        note: 'GPU queue slot acquired. Checking AMD capacity before billing starts.',
+      }
+      updateStoryStep(job, 'gpu_queue', 'active', 'Queue slot acquired; checking AMD capacity. No GPU billing has started', 90)
+      continue
+    }
+
+    const pending = pendingById.get(job.id)
+    if (!pending) continue
+    const jobsAhead = pending.index + (snapshot.activeId ? 1 : 0)
+    const position = jobsAhead + 1
+    const queueState = pending.entry.ready ? 'waiting' : 'preparing'
+    job.queue = {
+      ...job.queue,
+      state: queueState,
+      position,
+      jobsAhead,
+      enqueuedAt: job.queue?.enqueuedAt || pending.entry.reservedAt || now,
+      note: pending.entry.ready
+        ? `Waiting for the single AMD render slot. ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead; GPU billing has not started.`
+        : `Queue place reserved while Fireworks prepares the product brief and video prompts. ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead.`,
+    }
+    if (pending.entry.ready) {
+      job.status = 'waiting_for_gpu'
+      updateStoryStep(
+        job,
+        'gpu_queue',
+        'active',
+        `Queue position ${position}; ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead. GPU billing has not started`,
+        Math.max(5, 80 - jobsAhead * 10),
+      )
+    } else {
+      touchStoryJob(job)
+    }
+  }
+}
+
+function setStoryQueueTerminal(job, state, note) {
+  job.queue = {
+    ...job.queue,
+    state,
+    position: 0,
+    jobsAhead: 0,
+    completedAt: new Date().toISOString(),
+    note,
+  }
+}
+
+function handleUnexpectedAmdQueueError(error, jobId) {
+  const job = storyJobs.get(jobId)
+  if (!job || ['ready', 'failed', 'cancelled'].includes(job.status)) return
+  job.status = 'failed'
+  job.error = error instanceof Error ? error.message : String(error)
+  setStoryQueueTerminal(job, 'failed', 'The queued AMD render stopped unexpectedly; the next job can continue.')
+  const active = job.activity.find((step) => step.status === 'active')
+  if (active) updateStoryStep(job, active.id, 'failed', job.error)
+  delete job.controller
+  touchStoryJob(job)
+}
+
+function isRetriableAmdCapacityError(error) {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  return /capacity|size is unavailable|currently unavailable|no mi300x|region.*unavailable|temporar|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|fetch failed|network|timed? out/.test(message)
+}
+
+async function waitForAmdCapacity(job, signal) {
+  while (true) {
+    if (signal.aborted) throw signal.reason || new Error('Product Story job cancelled.')
+    job.status = 'waiting_for_gpu'
+    job.queue.state = 'checking_capacity'
+    job.queue.note = 'First in queue. Checking AMD Developer Cloud capacity; GPU billing has not started.'
+    updateStoryStep(job, 'gpu_queue', 'active', 'First in queue; checking AMD Developer Cloud capacity. No GPU billing has started', 95)
+    try {
+      const capacity = await gpuLeaseOrchestrator.checkCapacity({ refresh: true })
+      if (capacity.available || capacity.requestable) return capacity
+      job.queue.state = 'capacity_wait'
+      job.queue.note = capacity.reason || 'Waiting for AMD MI300X capacity. GPU billing has not started.'
+      updateStoryStep(job, 'gpu_queue', 'active', `${job.queue.note} Retrying automatically`, 95)
+    } catch (error) {
+      if (!isRetriableAmdCapacityError(error)) throw error
+      job.queue.state = 'capacity_wait'
+      job.queue.note = `AMD capacity check is temporarily unavailable: ${error instanceof Error ? error.message : String(error)}`
+      updateStoryStep(job, 'gpu_queue', 'active', 'Capacity check is temporarily unavailable; retrying automatically with no GPU billing', 95)
+    }
+    await storyDelay(amdCapacityPollMs, signal)
+  }
 }
 
 async function buildStoryLaunchKit(input) {
@@ -2096,6 +2235,7 @@ async function buildStoryLaunchKit(input) {
 }
 
 async function runFastStory(job, signal) {
+  updateStoryStep(job, 'gpu_queue', 'skipped', 'Motion Preview does not enter the AMD render queue')
   const gpuProvisionStep = job.activity.find((step) => step.id === 'gpu_provision')
   if (gpuProvisionStep?.status !== 'failed') {
     updateStoryStep(job, 'gpu_provision', 'skipped', 'AMD GPU stayed offline; no GPU billing was started')
@@ -2109,6 +2249,15 @@ async function runFastStory(job, signal) {
       rocmVersion: '',
       leaseId: '',
     }
+  }
+  job.queue = {
+    state: 'not_required',
+    position: 0,
+    jobsAhead: 0,
+    enqueuedAt: null,
+    startedAt: null,
+    completedAt: new Date().toISOString(),
+    note: 'Motion Preview runs in the browser and does not require the AMD render queue.',
   }
   job.status = 'generating'
   updateStoryStep(job, 'motion_shots', 'active', `Preparing source-preserving shot 1 of ${job.plan.shots.length}`, 0)
@@ -2145,10 +2294,178 @@ async function runFastStory(job, signal) {
   }
 }
 
+function handleAmdStoryEvent(job, event) {
+  if (event.type === 'lease_request') {
+    job.status = 'gpu_starting'
+    updateStoryStep(job, 'gpu_provision', 'active', 'Requesting one zero-idle AMD GPU Droplet', 10)
+  } else if (event.type === 'lease_progress') {
+    job.status = 'gpu_starting'
+    job.queue.state = 'active'
+    job.queue.note = 'AMD render slot active. This job exclusively owns the GPU lifecycle until release.'
+    updateStoryStep(job, 'gpu_queue', 'completed', 'Exclusive AMD render slot acquired; no other Product Story can use this lifecycle')
+    job.gpu = {
+      status: event.lease?.phase || 'provisioning',
+      billing: 'active_for_job',
+      releasePolicy: 'destroy_after_job',
+      device: '',
+      rocmVersion: '',
+      leaseId: cleanText(event.lease?.id, 120),
+    }
+    updateStoryStep(job, 'gpu_provision', 'active', event.detail, event.lease?.phase === 'worker_booting' ? 65 : 30)
+  } else if (event.type === 'lease_ready') {
+    job.gpu = {
+      status: 'ready',
+      billing: 'active_for_job',
+      releasePolicy: 'destroy_after_job',
+      device: cleanText(event.lease?.gpuDevice, 120),
+      rocmVersion: cleanText(event.lease?.rocmVersion, 80),
+      leaseId: cleanText(event.lease?.id, 120),
+    }
+    updateStoryStep(job, 'gpu_queue', 'completed', 'Exclusive AMD render slot active')
+    updateStoryStep(job, 'gpu_provision', 'completed', `${job.gpu.device || 'AMD GPU'} ready`)
+    updateStoryStep(job, 'motion_shots', 'active', 'Loading Wan 2.2 text-image-to-video on AMD ROCm', 0)
+  } else if (event.type === 'job_progress') {
+    job.status = 'generating'
+    const stage = cleanText(event.worker?.stage, 80)
+    if (stage === 'identity_check') {
+      const finalShot = Number(event.worker?.context?.shot) === Number(event.worker?.context?.totalShots)
+      if (finalShot) {
+        updateStoryStep(job, 'motion_shots', 'completed', 'All text-guided Wan 2.2 shots generated')
+        updateStoryStep(job, 'identity_check', 'active', event.detail, event.progress)
+      } else {
+        updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
+      }
+    } else if (stage === 'video_composition' || stage === 'output_upload') {
+      updateStoryStep(job, 'motion_shots', 'completed', 'All text-guided Wan 2.2 shots generated')
+      updateStoryStep(job, 'identity_check', 'completed', 'Generated frames passed CLIP and OCR identity checks')
+      updateStoryStep(job, 'video_composition', 'active', event.detail, event.progress)
+    } else {
+      updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
+    }
+  } else if (event.type === 'lease_release') {
+    job.gpu.status = 'releasing'
+    updateStoryStep(job, 'release_gpu', 'active', event.detail, 50)
+  } else if (event.type === 'lease_released') {
+    job.gpu.status = 'released'
+    job.gpu.billing = 'inactive'
+    updateStoryStep(job, 'release_gpu', 'completed', 'AMD GPU destroyed; billing stopped and the next queued job may start')
+  } else if (event.type === 'lease_release_failed') {
+    job.gpu.status = 'release_failed'
+    job.gpu.billing = 'possibly_active'
+    updateStoryStep(job, 'release_gpu', 'failed', event.detail)
+  }
+}
+
+async function runAmdCinematicStory(job, signal) {
+  while (true) {
+    await waitForAmdCapacity(job, signal)
+    try {
+      const result = await runAmdStoryJob({
+        orchestratorUrl: storyOrchestratorUrl(),
+        token: process.env.AMD_GPU_ORCHESTRATOR_TOKEN || '',
+        story: job.plan,
+        sourceImages: job.request.sourceImages,
+        signal,
+        onEvent: (event) => handleAmdStoryEvent(job, event),
+      })
+      if (result.evidence?.identityVerified !== true) {
+        throw new Error('AMD worker did not return a verified product identity check.')
+      }
+      if (Number(result.evidence?.shotCount) !== job.plan.shots.length) {
+        throw new Error('AMD worker did not return every directed cinematic shot.')
+      }
+      job.effectiveMode = 'amd_cinematic'
+      job.output = {
+        status: 'ready',
+        format: cleanText(result.format, 40) || 'video/mp4',
+        videoUrl: cleanHttpsUrl(result.videoUrl),
+        composition: 'amd_gpu_worker',
+        width: Number(result.width) || job.plan.output.width,
+        height: Number(result.height) || job.plan.output.height,
+        durationSeconds: Number(result.durationSeconds) || job.plan.durationSeconds,
+        evidence: result.evidence || null,
+      }
+      updateStoryStep(job, 'motion_shots', 'completed', 'Wan 2.2 text-guided video shots generated on AMD ROCm')
+      updateStoryStep(job, 'identity_check', 'completed', 'CLIP similarity and OCR retention checks passed')
+      updateStoryStep(job, 'video_composition', 'completed', 'Verified shots composed into the final MP4')
+      return
+    } catch (error) {
+      if (signal.aborted) throw error
+      if (!job.gpu?.leaseId && isRetriableAmdCapacityError(error)) {
+        job.status = 'waiting_for_gpu'
+        job.gpu.status = 'offline'
+        job.gpu.billing = 'inactive'
+        job.queue.state = 'capacity_wait'
+        job.queue.note = 'AMD capacity changed before the Droplet was created. Retrying automatically with no GPU billing.'
+        updateStoryStep(job, 'gpu_queue', 'active', 'AMD capacity changed before provisioning; retrying automatically with no GPU billing', 95)
+        updateStoryStep(job, 'gpu_provision', 'pending', 'Waiting for AMD capacity before requesting a Droplet', 0)
+        await storyDelay(amdCapacityPollMs, signal)
+        continue
+      }
+
+      const releaseFailed = job.gpu?.status === 'release_failed'
+      const gpuProvisioned = Boolean(job.gpu?.leaseId)
+      job.warning = releaseFailed
+        ? `AMD GPU release failed: ${error instanceof Error ? error.message : String(error)} Use Release GPU now; the TTL reaper remains the final safeguard.`
+        : `AMD Cinematic failed: ${error instanceof Error ? error.message : String(error)}`
+      if (!releaseFailed) {
+        if (!gpuProvisioned) updateStoryStep(job, 'gpu_provision', 'failed', 'AMD GPU job failed; no motion preview was substituted')
+        for (const stepId of ['motion_shots', 'identity_check', 'video_composition']) {
+          const step = job.activity.find((item) => item.id === stepId)
+          if (step && !['completed', 'failed'].includes(step.status)) {
+            updateStoryStep(job, stepId, step.status === 'active' ? 'failed' : 'skipped', 'Not completed because the AMD Cinematic job failed')
+          }
+        }
+        if (!gpuProvisioned) {
+          job.gpu.status = 'offline'
+          job.gpu.billing = 'inactive'
+          updateStoryStep(job, 'release_gpu', 'skipped', 'No GPU Droplet was created; billing remained inactive')
+        }
+      }
+      throw error
+    }
+  }
+}
+
+function settleStoryJobFailure(job, error, signal) {
+  const cancelled = signal?.aborted
+  job.status = cancelled ? 'cancelled' : 'failed'
+  job.error = cancelled ? '' : error instanceof Error ? error.message : String(error)
+  setStoryQueueTerminal(
+    job,
+    cancelled ? 'cancelled' : 'failed',
+    cancelled ? 'Removed from the AMD render lifecycle.' : 'This AMD render ended; the next queued job may continue.',
+  )
+  const active = job.activity.find((step) => step.status === 'active')
+  if (active) updateStoryStep(job, active.id, cancelled ? 'cancelled' : 'failed', cancelled ? 'Cancelled by user' : job.error)
+  for (const step of job.activity) {
+    if (step.status === 'pending') updateStoryStep(job, step.id, 'skipped', cancelled ? 'Not run because the job was cancelled' : 'Not run because the job failed')
+  }
+  touchStoryJob(job)
+}
+
+async function processQueuedAmdStoryJob(jobId) {
+  const job = storyJobs.get(jobId)
+  if (!job || ['ready', 'failed', 'cancelled'].includes(job.status)) return
+  const controller = job.controller || new AbortController()
+  job.controller = controller
+  try {
+    await runAmdCinematicStory(job, controller.signal)
+    job.status = 'ready'
+    job.currentStep = 'release_gpu'
+    setStoryQueueTerminal(job, 'complete', 'AMD GPU destroyed; the next FIFO job can start.')
+    touchStoryJob(job)
+  } catch (error) {
+    settleStoryJobFailure(job, error, controller.signal)
+  } finally {
+    delete job.controller
+  }
+}
+
 async function processStoryJob(jobId) {
   const job = storyJobs.get(jobId)
   if (!job) return
-  const controller = new AbortController()
+  const controller = job.controller || new AbortController()
   job.controller = controller
   try {
     updateStoryStep(job, 'source_upload', 'completed', `${job.request.sourceImages.length} source photos stored`)
@@ -2189,132 +2506,23 @@ async function processStoryJob(jobId) {
     await storyDelay(260, controller.signal)
     updateStoryStep(job, 'storyboard', 'completed', `${job.plan.shots.length} text-guided video prompts ready`)
 
-    const cinematicRequested = job.requestedMode === 'amd_cinematic'
-    if (cinematicRequested && storyGpuEnabled()) {
-      job.status = 'gpu_starting'
-      updateStoryStep(job, 'gpu_provision', 'active', 'Requesting a zero-idle AMD GPU lease', 10)
-      try {
-        const result = await runAmdStoryJob({
-          orchestratorUrl: storyOrchestratorUrl(),
-          token: process.env.AMD_GPU_ORCHESTRATOR_TOKEN || '',
-          story: job.plan,
-          sourceImages: job.request.sourceImages,
-          signal: controller.signal,
-          onEvent: (event) => {
-            if (event.type === 'lease_progress') {
-              job.gpu = {
-                status: event.lease?.phase || 'provisioning',
-                billing: 'active_for_job',
-                releasePolicy: 'destroy_after_job',
-                device: '',
-                rocmVersion: '',
-                leaseId: cleanText(event.lease?.id, 120),
-              }
-              updateStoryStep(job, 'gpu_provision', 'active', event.detail, event.lease?.phase === 'worker_booting' ? 65 : 30)
-            } else if (event.type === 'lease_ready') {
-              job.gpu = {
-                status: 'ready',
-                billing: 'active_for_job',
-                releasePolicy: 'destroy_after_job',
-                device: cleanText(event.lease?.gpuDevice, 120),
-                rocmVersion: cleanText(event.lease?.rocmVersion, 80),
-                leaseId: cleanText(event.lease?.id, 120),
-              }
-              updateStoryStep(job, 'gpu_provision', 'completed', `${job.gpu.device || 'AMD GPU'} ready`)
-              updateStoryStep(job, 'motion_shots', 'active', 'Loading Wan 2.2 text-image-to-video on AMD ROCm', 0)
-            } else if (event.type === 'job_progress') {
-              job.status = 'generating'
-              const stage = cleanText(event.worker?.stage, 80)
-              if (stage === 'identity_check') {
-                const finalShot = Number(event.worker?.context?.shot) === Number(event.worker?.context?.totalShots)
-                if (finalShot) {
-                  updateStoryStep(job, 'motion_shots', 'completed', 'All text-guided Wan 2.2 shots generated')
-                  updateStoryStep(job, 'identity_check', 'active', event.detail, event.progress)
-                } else {
-                  updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
-                }
-              } else if (stage === 'video_composition' || stage === 'output_upload') {
-                updateStoryStep(job, 'motion_shots', 'completed', 'All text-guided Wan 2.2 shots generated')
-                updateStoryStep(job, 'identity_check', 'completed', 'Generated frames passed CLIP and OCR identity checks')
-                updateStoryStep(job, 'video_composition', 'active', event.detail, event.progress)
-              } else {
-                updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
-              }
-            } else if (event.type === 'lease_release') {
-              job.gpu.status = 'releasing'
-              updateStoryStep(job, 'release_gpu', 'active', event.detail, 50)
-            } else if (event.type === 'lease_released') {
-              job.gpu.status = 'released'
-              job.gpu.billing = 'inactive'
-              updateStoryStep(job, 'release_gpu', 'completed', 'AMD GPU destroyed; billing stopped')
-            } else if (event.type === 'lease_release_failed') {
-              job.gpu.status = 'release_failed'
-              job.gpu.billing = 'possibly_active'
-              updateStoryStep(job, 'release_gpu', 'failed', event.detail)
-            }
-          },
-        })
-        if (result.evidence?.identityVerified !== true) {
-          throw new Error('AMD worker did not return a verified product identity check.')
-        }
-        if (Number(result.evidence?.shotCount) !== job.plan.shots.length) {
-          throw new Error('AMD worker did not return every directed cinematic shot.')
-        }
-        job.effectiveMode = 'amd_cinematic'
-        job.output = {
-          status: 'ready',
-          format: cleanText(result.format, 40) || 'video/mp4',
-          videoUrl: cleanHttpsUrl(result.videoUrl),
-          composition: 'amd_gpu_worker',
-          width: Number(result.width) || job.plan.output.width,
-          height: Number(result.height) || job.plan.output.height,
-          durationSeconds: Number(result.durationSeconds) || job.plan.durationSeconds,
-          evidence: result.evidence || null,
-        }
-        updateStoryStep(job, 'motion_shots', 'completed', 'Wan 2.2 text-guided video shots generated on AMD ROCm')
-        updateStoryStep(job, 'identity_check', 'completed', 'CLIP similarity and OCR retention checks passed')
-        updateStoryStep(job, 'video_composition', 'completed', 'Verified shots composed into the final MP4')
-      } catch (error) {
-        const releaseFailed = job.gpu?.status === 'release_failed'
-        job.warning = releaseFailed
-          ? `AMD GPU release failed: ${error instanceof Error ? error.message : String(error)} Use Release GPU now; the TTL reaper remains the final safeguard.`
-          : `AMD Cinematic failed: ${error instanceof Error ? error.message : String(error)}`
-        if (!releaseFailed) {
-          updateStoryStep(job, 'gpu_provision', 'failed', 'AMD GPU job failed; no motion preview was substituted')
-          for (const stepId of ['motion_shots', 'identity_check', 'video_composition']) {
-            updateStoryStep(job, stepId, 'skipped', 'Not run because the AMD GPU was not provisioned')
-          }
-          if (!job.gpu?.leaseId) {
-            job.gpu.status = 'offline'
-            job.gpu.billing = 'inactive'
-            updateStoryStep(job, 'release_gpu', 'skipped', 'No GPU Droplet was created; billing remained inactive')
-          }
-        }
-        throw error
-      }
-    } else {
-      if (cinematicRequested) throw new Error('AMD Cinematic is unavailable until a verified Wan 2.2 GPU worker is online.')
-      job.effectiveMode = 'fast_story'
-      await runFastStory(job, controller.signal)
+    if (job.requestedMode === 'amd_cinematic') {
+      if (!storyGpuEnabled()) throw new Error('AMD Cinematic is unavailable until a verified Wan 2.2 GPU worker is online.')
+      job.status = 'waiting_for_gpu'
+      if (!amdStoryQueue.markReady(job.id)) throw new Error('The AMD render queue reservation was lost.')
+      return
     }
+
+    job.effectiveMode = 'fast_story'
+    await runFastStory(job, controller.signal)
     job.status = 'ready'
     job.currentStep = 'release_gpu'
     touchStoryJob(job)
   } catch (error) {
-    if (controller.signal.aborted) {
-      job.status = 'cancelled'
-      const active = job.activity.find((step) => step.status === 'active')
-      if (active) updateStoryStep(job, active.id, 'cancelled', 'Cancelled by user')
-    } else {
-      job.status = 'failed'
-      job.error = error instanceof Error ? error.message : String(error)
-      const active = job.activity.find((step) => step.status === 'active')
-      if (active) updateStoryStep(job, active.id, 'failed', job.error)
-    }
-    touchStoryJob(job)
+    amdStoryQueue.cancel(job.id)
+    settleStoryJobFailure(job, error, controller.signal)
   } finally {
-    delete job.controller
-    activeAmdStoryJobs.delete(jobId)
+    if (['ready', 'failed', 'cancelled'].includes(job.status)) delete job.controller
   }
 }
 
@@ -2324,38 +2532,12 @@ async function handleCreateStoryJob(req, res) {
     const rawBody = await readBody(req)
     const parsed = rawBody ? JSON.parse(rawBody) : {}
     const request = normalizeStoryRequest(parsed)
-    if (request.mode === 'amd_cinematic' && activeAmdStoryJobs.size) {
-      sendJson(res, 409, {
-        code: 'amd_gpu_busy',
-        error: 'AMD Cinematic is already rendering another Product Story. Wait for that GPU job to finish and release the Droplet.',
-      })
-      return
-    }
     if (request.mode === 'amd_cinematic' && !storyGpuEnabled()) {
       sendJson(res, 409, {
         code: 'amd_cinematic_unavailable',
         error: 'AMD Cinematic is unavailable until a verified Wan 2.2 GPU worker is online. Select Motion Preview instead.',
       })
       return
-    }
-    if (request.mode === 'amd_cinematic') {
-      try {
-        const capacity = await gpuLeaseOrchestrator.checkCapacity()
-        if (!capacity.available && !capacity.requestable) {
-          sendJson(res, 409, {
-            code: 'amd_capacity_unavailable',
-            error: capacity.reason,
-            capacity,
-          })
-          return
-        }
-      } catch (error) {
-        sendJson(res, 503, {
-          code: 'amd_capacity_check_failed',
-          error: `AMD capacity could not be verified: ${error instanceof Error ? error.message : String(error)}`,
-        })
-        return
-      }
     }
     if (request.sourceImages.length < productStoryLimits.minImages) {
       sendJson(res, 400, { error: `Upload at least ${productStoryLimits.minImages} product photos.` })
@@ -2397,13 +2579,36 @@ async function handleCreateStoryJob(req, res) {
         rocmVersion: '',
         leaseId: '',
       },
+      queue: {
+        state: request.mode === 'amd_cinematic' ? 'preparing' : 'not_required',
+        position: 0,
+        jobsAhead: 0,
+        enqueuedAt: request.mode === 'amd_cinematic' ? now : null,
+        startedAt: null,
+        completedAt: null,
+        note: request.mode === 'amd_cinematic'
+          ? 'FIFO place reserved while Fireworks prepares the product brief and video prompts.'
+          : 'Motion Preview does not require the AMD render queue.',
+      },
       warning: '',
       error: '',
+      controller: new AbortController(),
       createdAt: now,
       updatedAt: now,
     }
     storyJobs.set(id, job)
-    if (request.mode === 'amd_cinematic') activeAmdStoryJobs.add(id)
+    if (request.mode === 'amd_cinematic') {
+      const reservation = amdStoryQueue.reserve(id)
+      if (!reservation.accepted) {
+        storyJobs.delete(id)
+        sendJson(res, 429, {
+          code: 'amd_queue_full',
+          error: `The AMD render queue is full (${reservation.capacity} jobs). Try again after a queued job finishes or is cancelled.`,
+          queue: { policy: 'fifo', concurrency: 1, capacity: reservation.capacity },
+        })
+        return
+      }
+    }
     setTimeout(() => processStoryJob(id), 0)
     sendJson(res, 202, publicStoryJob(job))
   } catch (error) {
@@ -2420,8 +2625,40 @@ function handleGetStoryJob(res, jobId) {
   sendJson(res, 200, publicStoryJob(job))
 }
 
+function cancelStoryJob(job) {
+  if (['ready', 'failed', 'cancelled'].includes(job.status)) return
+  const controller = job.controller
+  const removedFromQueue = amdStoryQueue.cancel(job.id)
+  const activeGpuJob = amdStoryQueue.snapshot().activeId === job.id
+  controller?.abort(new Error('Cancelled by user.'))
+
+  if (activeGpuJob) {
+    job.status = 'cancelling'
+    job.queue.state = 'cancelling'
+    job.queue.note = 'Cancelling the active render and destroying its AMD GPU before the next job starts.'
+    const active = job.activity.find((step) => step.status === 'active')
+    if (active) updateStoryStep(job, active.id, 'active', 'Cancellation requested; destroying the AMD GPU before advancing the queue', active.progress)
+    touchStoryJob(job)
+    return
+  }
+
+  settleStoryJobFailure(job, new Error('Cancelled by user.'), controller?.signal || AbortSignal.abort())
+  if (removedFromQueue) {
+    const queueStep = job.activity.find((step) => step.id === 'gpu_queue')
+    if (queueStep && !['completed', 'cancelled'].includes(queueStep.status)) {
+      updateStoryStep(job, 'gpu_queue', 'cancelled', 'Removed from the AMD render queue; no GPU billing started')
+    }
+  }
+}
+
 async function releaseStoryGpu(job) {
+  const removedFromQueue = amdStoryQueue.cancel(job.id)
   job.controller?.abort(new Error('GPU released by user.'))
+  if (removedFromQueue && !job.gpu?.leaseId) {
+    settleStoryJobFailure(job, new Error('GPU queue place released by user.'), job.controller?.signal || AbortSignal.abort())
+    updateStoryStep(job, 'gpu_queue', 'cancelled', 'Removed from the AMD render queue; no GPU Droplet existed')
+    return
+  }
   const leaseId = job.gpu?.leaseId
   const orchestratorUrl = storyOrchestratorUrl()
   if (leaseId && orchestratorUrl) {
@@ -2436,9 +2673,9 @@ async function releaseStoryGpu(job) {
     })
     if (!response.ok) throw new Error(`AMD GPU release returned ${response.status}.`)
   }
-  job.gpu.status = 'released'
+  job.gpu.status = leaseId ? 'released' : 'offline'
   job.gpu.billing = 'inactive'
-  updateStoryStep(job, 'release_gpu', 'completed', 'AMD GPU destroyed; billing stopped')
+  updateStoryStep(job, 'release_gpu', leaseId ? 'completed' : 'skipped', leaseId ? 'AMD GPU destroyed; billing stopped' : 'No GPU Droplet existed; billing remained inactive')
 }
 
 function gpuControlAuthorized(req) {
@@ -3346,6 +3583,9 @@ const server = http.createServer(async (req, res) => {
       amdGpuCapacityState: process.env.AMD_GPU_CAPACITY_STATE || 'unknown',
       amdGpuAvailabilityReason: process.env.AMD_GPU_AVAILABILITY_REASON || '',
       gpuZeroIdlePolicy: 'destroy_after_job',
+      gpuQueuePolicy: 'fifo',
+      gpuQueueConcurrency: 1,
+      gpuQueueCapacity: amdStoryQueueMaxSize,
       storyLimits: productStoryLimits,
       visualCriticThreshold: 82,
       visualCriticRepairPasses: 2,
@@ -3447,11 +3687,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { error: 'Product Story job not found.' })
       return
     }
-    job.controller?.abort(new Error('Cancelled by user.'))
-    if (!job.controller && !['ready', 'failed', 'cancelled'].includes(job.status)) {
-      job.status = 'cancelled'
-      touchStoryJob(job)
-    }
+    cancelStoryJob(job)
     sendJson(res, 202, publicStoryJob(job))
     return
   }

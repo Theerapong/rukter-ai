@@ -199,6 +199,40 @@ test('builds product-agnostic retries from identity locks and typed failure code
   assert.match(pipeline, /"observedFailureCodes"/)
 })
 
+test('unwraps tensor and Transformers 5 CLIP feature outputs before normalization', () => {
+  const result = runWorkerScript(`
+import __future__, ast, json, types
+source = open('amd-worker/run_story_pipeline.py', encoding='utf-8').read()
+tree = ast.parse(source)
+selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'clip_feature_tensor']
+
+class FakeTensor:
+    def __init__(self, label, ndim=2):
+        self.label = label
+        self.ndim = ndim
+    def __getitem__(self, _key):
+        return FakeTensor(self.label + '-pooled', 2)
+
+namespace = {'torch': types.SimpleNamespace(Tensor=FakeTensor)}
+module = ast.Module(body=selected, type_ignores=[])
+exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
+unwrap = namespace['clip_feature_tensor']
+print(json.dumps({
+  'direct': unwrap(FakeTensor('direct'), 'text').label,
+  'textEmbeds': unwrap(types.SimpleNamespace(text_embeds=FakeTensor('text-embeds'), pooler_output=FakeTensor('pooler')), 'text').label,
+  'pooler': unwrap(types.SimpleNamespace(pooler_output=FakeTensor('projected-pooler')), 'text').label,
+  'sequence': unwrap(types.SimpleNamespace(last_hidden_state=FakeTensor('sequence', 3)), 'image').label,
+}))
+`)
+
+  assert.deepEqual(result, {
+    direct: 'direct',
+    textEmbeds: 'text-embeds',
+    pooler: 'projected-pooler',
+    sequence: 'sequence-pooled',
+  })
+})
+
 test('uses the current shot locks and local failure type when constructing a retry', () => {
   const result = runWorkerScript(`
 import __future__, ast, json, re

@@ -311,16 +311,18 @@ def resize_contain(image: Image.Image, width: int, height: int) -> Image.Image:
     return canvas
 
 
-def image_feature_tensor(features) -> torch.Tensor:
+def clip_feature_tensor(features, feature_kind: str) -> torch.Tensor:
     if isinstance(features, torch.Tensor):
         return features
-    for attribute in ("pooler_output", "image_embeds", "last_hidden_state"):
+    for attribute in (f"{feature_kind}_embeds", "pooler_output", "last_hidden_state"):
         value = getattr(features, attribute, None)
         if isinstance(value, torch.Tensor):
             if value.ndim == 3:
                 return value[:, 0, :]
             return value
-    raise RuntimeError(f"CLIP image features did not contain a tensor: {type(features).__name__}")
+    raise RuntimeError(
+        f"CLIP {feature_kind} features did not contain a tensor: {type(features).__name__}"
+    )
 
 
 def human_contamination_evidence(sample_features: torch.Tensor, clip_model, clip_processor, allow_people: bool = False) -> dict:
@@ -332,7 +334,7 @@ def human_contamination_evidence(sample_features: torch.Tensor, clip_model, clip
     )
     text_inputs = {key: value.to("cuda") for key, value in text_inputs.items()}
     with torch.inference_mode():
-        text_features = clip_model.get_text_features(**text_inputs)
+        text_features = clip_feature_tensor(clip_model.get_text_features(**text_inputs), "text")
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
     scores = (sample_features @ text_features.T).detach().float().cpu().numpy()
     human_count = len(HUMAN_CONTAMINATION_PROMPTS)
@@ -386,7 +388,7 @@ def identity_evidence(
     inputs = clip_processor(images=[source, *samples], return_tensors="pt")
     inputs = {key: value.to("cuda") for key, value in inputs.items()}
     with torch.inference_mode():
-        features = image_feature_tensor(clip_model.get_image_features(**inputs))
+        features = clip_feature_tensor(clip_model.get_image_features(**inputs), "image")
         features = features / features.norm(dim=-1, keepdim=True)
     sample_features = features[1:]
     similarities = (sample_features @ features[0]).detach().float().cpu().tolist()

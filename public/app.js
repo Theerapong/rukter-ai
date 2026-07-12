@@ -523,6 +523,43 @@ function friendlyQueue(queue) {
   return 'Preparing'
 }
 
+function renderJobNotice(job) {
+  jobWarning.replaceChildren()
+  jobWarning.classList.toggle('is-error', Boolean(job.error))
+  if (job.error) {
+    const title = document.createElement('strong')
+    title.textContent = 'Job stopped'
+    const message = document.createElement('p')
+    message.textContent = job.error
+    jobWarning.append(title, message)
+    jobWarning.hidden = false
+    return
+  }
+  if (!job.warning) {
+    jobWarning.hidden = true
+    return
+  }
+
+  const title = document.createElement('strong')
+  const message = document.createElement('p')
+  if (job.warning.startsWith('Vision provider fallback:')) {
+    title.textContent = 'Vision fallback used'
+    message.textContent = 'The video is still running. Product analysis used local evidence because the remote vision model timed out.'
+    const details = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = 'Technical detail'
+    const code = document.createElement('code')
+    code.textContent = job.warning.replace(/^Vision provider fallback:\s*/, '')
+    details.append(summary, code)
+    jobWarning.append(title, message, details)
+  } else {
+    title.textContent = 'Notice'
+    message.textContent = job.warning
+    jobWarning.append(title, message)
+  }
+  jobWarning.hidden = false
+}
+
 function renderJob(job) {
   currentJob = job
   renderActivity(job.activity, job)
@@ -554,8 +591,7 @@ function renderJob(job) {
     : waitingForGpu
       ? job.queue?.position ? `AMD queue #${job.queue.position}` : 'AMD queue next'
     : job.gpu?.status === 'released' ? 'AMD GPU released' : 'AMD GPU offline'
-  jobWarning.hidden = !job.warning && !job.error
-  jobWarning.textContent = job.error || job.warning || ''
+  renderJobNotice(job)
   releaseGpuButton.disabled = gpuBillingPersistent || (!gpuBillingActive && !gpuBillingUncertain && !['ready', 'releasing'].includes(job.gpu?.status))
   releaseGpuButton.textContent = gpuBillingPersistent ? 'Persistent GPU stays online' : 'Release GPU now'
   cancelJobButton.disabled = terminalStates.has(job.status)

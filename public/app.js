@@ -45,6 +45,7 @@ const queueState = $('#queueState')
 const workerState = $('#workerState')
 const gpuState = $('#gpuState')
 const billingState = $('#billingState')
+const releasePolicyState = $('#releasePolicyState')
 const outputState = $('#outputState')
 const exportVideoButton = $('#exportVideoButton')
 const exportStoryboardButton = $('#exportStoryboardButton')
@@ -113,25 +114,29 @@ function renderCapacity(capacity = config) {
   const available = state === 'available' && (capacity.available ?? true)
   const requestable = state === 'requestable' || capacity.requestable === true
   const publicEnabled = capacity.publicEnabled ?? capacity.amdGpuPublicEnabled ?? false
+  const persistent = capacity.persistentLease === true || capacity.lifecycle === 'persistent'
   const canStart = (available || requestable) && publicEnabled
   const canQueue = publicEnabled
   const reason = capacity.reason || capacity.amdGpuAvailabilityReason || ''
   config.amdGpuCapacityState = state
   config.amdGpuAvailabilityReason = reason
   config.amdGpuPublicEnabled = publicEnabled
-  amdModeState.textContent = canStart ? requestable ? 'On demand' : 'Available' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
+  config.amdGpuPersistent = persistent
+  amdModeState.textContent = persistent ? 'Persistent' : canStart ? requestable ? 'On demand' : 'Available' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
   amdModeInput.disabled = !canQueue
   amdModeOption.classList.toggle('is-disabled', !canQueue)
   amdModeState.title = canStart
-    ? 'AMD GPU starts on demand and is destroyed after the job.'
+    ? persistent
+      ? 'The persistent AMD GPU remains online after each Product Story job.'
+      : 'AMD GPU starts on demand and is destroyed after the job.'
     : canQueue
       ? 'The FIFO queue accepts the job and waits without GPU billing until capacity returns.'
       : reason || 'AMD Cinematic is unavailable.'
-  capacityState.textContent = canStart ? requestable ? 'On demand' : 'Ready' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
+  capacityState.textContent = persistent ? 'Online' : canStart ? requestable ? 'On demand' : 'Ready' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
   capacityButton.classList.toggle('is-ready', canStart || canQueue)
   computeBadge.classList.toggle('is-safe', canStart || canQueue)
   computeBadge.querySelector('span').textContent = canStart
-    ? requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
+    ? persistent ? 'AMD GPU persistent' : requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
     : canQueue
       ? 'AMD FIFO queue ready'
     : available
@@ -140,7 +145,9 @@ function renderCapacity(capacity = config) {
         ? 'AMD capacity unconfirmed'
         : 'AMD capacity unavailable'
   computeNote.textContent = canStart
-    ? requestable
+    ? persistent
+      ? 'The persistent MI300X is already online and remains running between jobs. AMD credits continue while the Droplet is active.'
+      : requestable
       ? 'AMD Cinematic jobs enter one FIFO queue. Billing starts only when this job provisions the MI300X and stops when the Droplet is destroyed.'
       : 'AMD Cinematic jobs render one at a time. Waiting jobs do not start GPU billing.'
     : canQueue
@@ -165,9 +172,11 @@ async function checkGpuCapacity() {
     if ((capacity.available || capacity.requestable) && capacity.publicEnabled) {
       amdModeInput.checked = true
       updateGenerateAvailability()
-      showToast(capacity.requestable
-        ? 'AMD on-demand provisioning is ready. Starting the story will request one MI300X.'
-        : 'AMD capacity is ready. Start the story to create the GPU Droplet.', 5600)
+      showToast(capacity.persistentLease
+        ? 'Persistent AMD MI300X is online and will remain running after each job.'
+        : capacity.requestable
+          ? 'AMD on-demand provisioning is ready. Starting the story will request one MI300X.'
+          : 'AMD capacity is ready. Start the story to create the GPU Droplet.', 5600)
     } else if (capacity.state === 'available' && capacity.available) {
       showToast('AMD capacity exists, but the owner safety switch is off.', 5600)
     } else if (capacity.state === 'requestable' || capacity.requestable) {
@@ -529,21 +538,24 @@ function renderJob(job) {
     : 'Browser compositor'
   gpuState.textContent = waitingForGpu ? 'Not started' : job.gpu?.status ? job.gpu.status.replaceAll('_', ' ') : 'Offline'
   const gpuBillingActive = job.gpu?.billing === 'active_for_job'
+  const gpuBillingPersistent = job.gpu?.billing === 'persistent_active' || job.gpu?.releasePolicy === 'retain_after_job'
   const gpuBillingUncertain = job.gpu?.billing === 'possibly_active'
-  billingState.textContent = gpuBillingActive ? 'Active for job' : gpuBillingUncertain ? 'Release required' : 'Inactive'
-  billingState.classList.toggle('active', gpuBillingActive || gpuBillingUncertain)
-  billingState.classList.toggle('safe', !gpuBillingActive && !gpuBillingUncertain)
+  billingState.textContent = gpuBillingPersistent ? 'Persistent' : gpuBillingActive ? 'Active for job' : gpuBillingUncertain ? 'Release required' : 'Inactive'
+  billingState.classList.toggle('active', gpuBillingActive || gpuBillingPersistent || gpuBillingUncertain)
+  billingState.classList.toggle('safe', !gpuBillingActive && !gpuBillingPersistent && !gpuBillingUncertain)
+  releasePolicyState.textContent = gpuBillingPersistent ? 'Keep online' : 'Destroy after job'
   outputState.textContent = job.output?.status === 'ready' ? `${job.output.width} × ${job.output.height}` : 'Waiting'
-  computeBadge.classList.toggle('is-active', gpuBillingActive || gpuBillingUncertain)
-  computeBadge.classList.toggle('is-safe', waitingForGpu || job.gpu?.status === 'released')
-  computeBadge.querySelector('span').textContent = gpuBillingActive || gpuBillingUncertain
-    ? gpuBillingUncertain ? 'Release GPU' : 'AMD GPU active'
+  computeBadge.classList.toggle('is-active', gpuBillingActive || gpuBillingPersistent || gpuBillingUncertain)
+  computeBadge.classList.toggle('is-safe', waitingForGpu || gpuBillingPersistent || job.gpu?.status === 'released')
+  computeBadge.querySelector('span').textContent = gpuBillingActive || gpuBillingPersistent || gpuBillingUncertain
+    ? gpuBillingUncertain ? 'Release GPU' : gpuBillingPersistent ? 'AMD GPU persistent' : 'AMD GPU active'
     : waitingForGpu
       ? job.queue?.position ? `AMD queue #${job.queue.position}` : 'AMD queue next'
     : job.gpu?.status === 'released' ? 'AMD GPU released' : 'AMD GPU offline'
   jobWarning.hidden = !job.warning && !job.error
   jobWarning.textContent = job.error || job.warning || ''
-  releaseGpuButton.disabled = !gpuBillingActive && !gpuBillingUncertain && !['ready', 'releasing'].includes(job.gpu?.status)
+  releaseGpuButton.disabled = gpuBillingPersistent || (!gpuBillingActive && !gpuBillingUncertain && !['ready', 'releasing'].includes(job.gpu?.status))
+  releaseGpuButton.textContent = gpuBillingPersistent ? 'Persistent GPU stays online' : 'Release GPU now'
   cancelJobButton.disabled = terminalStates.has(job.status)
   const ready = job.status === 'ready' && Boolean(job.plan)
   exportVideoButton.disabled = !ready
@@ -567,7 +579,9 @@ function renderJob(job) {
     exportStatus.textContent = job.queue?.note || 'Waiting in FIFO order. GPU billing has not started.'
   }
   if (ready) exportStatus.textContent = job.output?.videoUrl
-    ? 'AMD video output is ready. The GPU lease has been released.'
+    ? gpuBillingPersistent
+      ? 'AMD video output is ready. The persistent MI300X remains online for the next job.'
+      : 'AMD video output is ready. The GPU lease has been released.'
     : 'Interactive preview is ready. Export renders the exact source photos in your browser.'
 }
 
@@ -861,11 +875,15 @@ async function releaseGpu() {
     const job = await response.json()
     if (!response.ok) throw new Error(job.error || 'Could not release AMD GPU.')
     renderJob(job)
-    showToast('AMD GPU released; billing stopped')
+    showToast(job.gpu?.releasePolicy === 'retain_after_job'
+      ? 'Persistent AMD GPU retained online'
+      : 'AMD GPU released; billing stopped')
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error))
   } finally {
-    releaseGpuButton.textContent = 'Release GPU now'
+    releaseGpuButton.textContent = currentJob?.gpu?.releasePolicy === 'retain_after_job'
+      ? 'Persistent GPU stays online'
+      : 'Release GPU now'
   }
 }
 

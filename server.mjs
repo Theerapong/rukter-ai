@@ -83,6 +83,7 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       vpcUuid: process.env.AMD_GPU_VPC_UUID || '',
       sshKeyFingerprint: process.env.AMD_GPU_SSH_KEY_FINGERPRINT || '',
       sshKeyName: process.env.AMD_GPU_SSH_KEY_NAME || '',
+      persistentTag: process.env.AMD_GPU_PERSISTENT_TAG || 'rukter-product-story-persistent',
       ttlSeconds: Number(process.env.AMD_GPU_LEASE_TTL_SECONDS) || 1800,
       workerSourceBaseUrl: process.env.AMD_GPU_WORKER_SOURCE_BASE_URL,
     })
@@ -2295,6 +2296,8 @@ async function runFastStory(job, signal) {
 }
 
 function handleAmdStoryEvent(job, event) {
+  const eventReleasePolicy = event.lease?.releasePolicy || job.gpu?.releasePolicy || 'destroy_after_job'
+  const persistentLease = eventReleasePolicy === 'retain_after_job'
   if (event.type === 'lease_request') {
     job.status = 'gpu_starting'
     updateStoryStep(job, 'gpu_provision', 'active', 'Requesting one zero-idle AMD GPU Droplet', 10)
@@ -2305,8 +2308,8 @@ function handleAmdStoryEvent(job, event) {
     updateStoryStep(job, 'gpu_queue', 'completed', 'Exclusive AMD render slot acquired; no other Product Story can use this lifecycle')
     job.gpu = {
       status: event.lease?.phase || 'provisioning',
-      billing: 'active_for_job',
-      releasePolicy: 'destroy_after_job',
+      billing: persistentLease ? 'persistent_active' : 'active_for_job',
+      releasePolicy: eventReleasePolicy,
       device: '',
       rocmVersion: '',
       leaseId: cleanText(event.lease?.id, 120),
@@ -2315,8 +2318,8 @@ function handleAmdStoryEvent(job, event) {
   } else if (event.type === 'lease_ready') {
     job.gpu = {
       status: 'ready',
-      billing: 'active_for_job',
-      releasePolicy: 'destroy_after_job',
+      billing: persistentLease ? 'persistent_active' : 'active_for_job',
+      releasePolicy: eventReleasePolicy,
       device: cleanText(event.lease?.gpuDevice, 120),
       rocmVersion: cleanText(event.lease?.rocmVersion, 80),
       leaseId: cleanText(event.lease?.id, 120),
@@ -2343,12 +2346,18 @@ function handleAmdStoryEvent(job, event) {
       updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
     }
   } else if (event.type === 'lease_release') {
-    job.gpu.status = 'releasing'
+    job.gpu.status = persistentLease ? 'retaining' : 'releasing'
+    job.gpu.releasePolicy = eventReleasePolicy
     updateStoryStep(job, 'release_gpu', 'active', event.detail, 50)
   } else if (event.type === 'lease_released') {
     job.gpu.status = 'released'
     job.gpu.billing = 'inactive'
     updateStoryStep(job, 'release_gpu', 'completed', 'AMD GPU destroyed; billing stopped and the next queued job may start')
+  } else if (event.type === 'lease_retained') {
+    job.gpu.status = 'ready'
+    job.gpu.billing = 'persistent_active'
+    job.gpu.releasePolicy = 'retain_after_job'
+    updateStoryStep(job, 'release_gpu', 'skipped', 'Persistent AMD GPU retained online for the next Product Story job')
   } else if (event.type === 'lease_release_failed') {
     job.gpu.status = 'release_failed'
     job.gpu.billing = 'possibly_active'
@@ -2453,7 +2462,13 @@ async function processQueuedAmdStoryJob(jobId) {
     await runAmdCinematicStory(job, controller.signal)
     job.status = 'ready'
     job.currentStep = 'release_gpu'
-    setStoryQueueTerminal(job, 'complete', 'AMD GPU destroyed; the next FIFO job can start.')
+    setStoryQueueTerminal(
+      job,
+      'complete',
+      job.gpu?.releasePolicy === 'retain_after_job'
+        ? 'Persistent AMD GPU retained online; the next FIFO job can reuse it.'
+        : 'AMD GPU destroyed; the next FIFO job can start.',
+    )
     touchStoryJob(job)
   } catch (error) {
     settleStoryJobFailure(job, error, controller.signal)
@@ -2661,6 +2676,7 @@ async function releaseStoryGpu(job) {
   }
   const leaseId = job.gpu?.leaseId
   const orchestratorUrl = storyOrchestratorUrl()
+  let releaseResult = null
   if (leaseId && orchestratorUrl) {
     const response = await fetch(`${orchestratorUrl.replace(/\/$/, '')}/v1/leases/${encodeURIComponent(leaseId)}/release`, {
       method: 'POST',
@@ -2672,6 +2688,14 @@ async function releaseStoryGpu(job) {
       signal: AbortSignal.timeout(15_000),
     })
     if (!response.ok) throw new Error(`AMD GPU release returned ${response.status}.`)
+    releaseResult = await response.json().catch(() => null)
+  }
+  if (releaseResult?.status === 'retained' || releaseResult?.releasePolicy === 'retain_after_job') {
+    job.gpu.status = 'ready'
+    job.gpu.billing = 'persistent_active'
+    job.gpu.releasePolicy = 'retain_after_job'
+    updateStoryStep(job, 'release_gpu', 'skipped', 'Persistent AMD GPU retained online by owner policy')
+    return
   }
   job.gpu.status = leaseId ? 'released' : 'offline'
   job.gpu.billing = 'inactive'
@@ -3583,6 +3607,8 @@ const server = http.createServer(async (req, res) => {
       amdGpuCapacityState: process.env.AMD_GPU_CAPACITY_STATE || 'unknown',
       amdGpuAvailabilityReason: process.env.AMD_GPU_AVAILABILITY_REASON || '',
       gpuZeroIdlePolicy: 'destroy_after_job',
+      gpuPersistentPolicy: 'retain_tagged_worker',
+      amdGpuPersistentTag: process.env.AMD_GPU_PERSISTENT_TAG || 'rukter-product-story-persistent',
       gpuQueuePolicy: 'fifo',
       gpuQueueConcurrency: 1,
       gpuQueueCapacity: amdStoryQueueMaxSize,
@@ -3618,7 +3644,7 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const capacity = await gpuLeaseOrchestrator.checkCapacity({ refresh: url.searchParams.get('refresh') === '1' })
-      sendJson(res, 200, { ...capacity, publicEnabled: storyGpuEnabled(), billing: 'inactive' })
+      sendJson(res, 200, { ...capacity, publicEnabled: storyGpuEnabled(), billing: capacity.billing || 'inactive' })
     } catch (error) {
       sendJson(res, 503, {
         state: 'check_failed',

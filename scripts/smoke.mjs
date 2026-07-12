@@ -21,6 +21,9 @@ if (!config.productStoryConfigured || config.gpuZeroIdlePolicy !== 'destroy_afte
 if (config.gpuQueuePolicy !== 'fifo' || config.gpuQueueConcurrency !== 1 || config.gpuQueueCapacity < 1) {
   throw new Error('Product Story FIFO GPU queue contract is not configured.')
 }
+if (config.gpuPersistentPolicy !== 'retain_tagged_worker' || config.amdGpuPersistentTag !== 'rukter-product-story-persistent') {
+  throw new Error('Persistent AMD GPU retention contract is not configured.')
+}
 if (config.storyLimits?.minImages !== 3 || config.storyLimits?.maxImages !== 8) {
   throw new Error('Product Story source image limits are incorrect.')
 }

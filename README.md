@@ -222,9 +222,14 @@ export AMD_GPU_VPC_UUID="<region-matched-vpc-uuid>"
 export AMD_GPU_PUBLIC_ENABLED="true"
 export AMD_GPU_QUEUE_MAX_SIZE="25"
 export AMD_GPU_CAPACITY_POLL_MS="30000"
+export AMD_GPU_PERSISTENT_TAG="rukter-product-story-persistent"
 ```
 
-Keep `AMD_GPU_PUBLIC_ENABLED=false` until one complete create, render, identity-check, and destroy cycle has been observed.
+An owner-funded portal Droplet tagged `rukter-product-story-persistent` is retained after every job and excluded from TTL reaping. Ephemeral workers continue to use `rukter-product-story-ephemeral` and are destroyed after each job. Never apply both tags to the same Droplet.
+
+After creating the persistent ROCm Droplet with the registered Rukter SSH key, run the manual `bootstrap:amd-persistent` GitLab job. It installs the authenticated worker, verifies ROCm and `acceptingJobs`, and leaves the Droplet running.
+
+Keep `AMD_GPU_PUBLIC_ENABLED=false` until one complete create, render, identity-check, and lifecycle-policy cycle has been observed.
 
 The current AMD worker runs Wan2.2 TI2V 5B directly through Diffusers on ROCm. This is text-guided image-to-video: each Fireworks-directed prompt is conditioned on a real product view, then sampled frames are checked with CLIP similarity and OCR retention. AMD also documents an equivalent headless ComfyUI HTTP workflow for Wan2.2 5B on MI300X. That service-oriented ComfyUI path is compatible with this job contract, but the UI reports `Diffusers` until the worker backend is actually switched and verified; it does not claim ComfyUI based only on documentation.
 

@@ -3,9 +3,11 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,39 @@ MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
 IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD", "0.90"))
+OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
+
+
+def positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+OUTPUT_RETENTION_MAX_JOBS = positive_env_int("OUTPUT_RETENTION_MAX_JOBS", 4)
+OUTPUT_RETENTION_MAX_AGE_SECONDS = positive_env_int("OUTPUT_RETENTION_MAX_AGE_SECONDS", 6 * 60 * 60)
+
+
+def cleanup_output_directories(preserve: Path | None = None) -> None:
+    """Remove stale/crashed artifacts and cap retained output directories."""
+    if not OUTPUT_ROOT.exists():
+        return
+    now = time.time()
+    directories = sorted(
+        (path for path in OUTPUT_ROOT.iterdir() if path.is_dir() and path != preserve),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    retained_slots = max(0, OUTPUT_RETENTION_MAX_JOBS - (1 if preserve is not None else 0))
+    for index, directory in enumerate(directories):
+        try:
+            expired = now - directory.stat().st_mtime > OUTPUT_RETENTION_MAX_AGE_SECONDS
+            over_limit = index >= retained_slots
+            if expired or over_limit:
+                shutil.rmtree(directory)
+        except FileNotFoundError:
+            continue
 
 
 def report_progress(progress: int, detail: str, stage: str, context: dict | None = None) -> None:
@@ -178,8 +213,9 @@ def main() -> None:
     evidence = []
     clips = []
     job_id = hashlib.sha256(input_path.read_bytes()).hexdigest()[:20]
-    output_directory = Path("/var/lib/rukter-outputs") / job_id
+    output_directory = OUTPUT_ROOT / job_id
     output_directory.mkdir(parents=True, exist_ok=True)
+    cleanup_output_directories(preserve=output_directory)
 
     for index, shot in enumerate(shots):
         shot_start = 20 + round(index * 68 / total_shots)
@@ -243,6 +279,7 @@ def main() -> None:
         },
     }
     output_path.write_text(json.dumps(result), encoding="utf-8")
+    cleanup_output_directories(preserve=output_directory)
     report_progress(100, "AMD Product Story ready", "complete")
 
 

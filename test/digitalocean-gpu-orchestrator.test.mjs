@@ -61,7 +61,7 @@ test('creates, verifies, and destroys one MI300X lease', async () => {
     }
     if (url.endsWith('/v2/droplets/123') && options.method === 'DELETE') return new Response(null, { status: 204 })
     if (url.endsWith('/v2/droplets/123')) {
-      return json({ droplet: { id: 123, status: 'active', created_at: createdAt, networks: { v4: [{ type: 'public', ip_address: '203.0.113.10' }] } } })
+      return json({ droplet: { id: 123, status: 'active', created_at: createdAt, tags: ['rukter-product-story-ephemeral'], networks: { v4: [{ type: 'public', ip_address: '203.0.113.10' }] } } })
     }
     if (url === 'http://203.0.113.10:8080/health') {
       return json({ status: 'ok', available: true, device: 'AMD Instinct MI300X', rocmVersion: '7.2.4' })
@@ -94,7 +94,8 @@ test('reaper destroys an expired tagged GPU lease', async () => {
   const requests = []
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url, method: options.method || 'GET' })
-    if (url.includes('/droplets?')) return json({ droplets: [{ id: 456, created_at: createdAt }] })
+    if (url.includes('/droplets?')) return json({ droplets: [{ id: 456, created_at: createdAt, tags: ['rukter-product-story-ephemeral'] }] })
+    if (url.endsWith('/droplets/456') && !options.method) return json({ droplet: { id: 456, created_at: createdAt, tags: ['rukter-product-story-ephemeral'] } })
     if (url.endsWith('/droplets/456') && options.method === 'DELETE') return new Response(null, { status: 204 })
     throw new Error(`Unexpected request: ${url}`)
   }
@@ -282,12 +283,14 @@ test('adopts an existing portal-created MI300X lease without creating another Dr
     id: 583920869,
     status: 'active',
     created_at: createdAt,
+    tags: ['rukter-product-story-persistent'],
     region: { slug: 'atl1' },
     size: { slug: 'gpu-mi300x1-192gb-devcloud' },
   }
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url, method: options.method || 'GET' })
-    if (url.includes('/droplets?')) return json({ droplets: [existing] })
+    if (url.includes('tag_name=rukter-product-story-persistent')) return json({ droplets: [existing] })
+    if (url.includes('tag_name=rukter-product-story-ephemeral')) return json({ droplets: [] })
     throw new Error(`Unexpected request: ${url}`)
   }
   const orchestrator = createDigitalOceanGpuOrchestrator({
@@ -298,9 +301,69 @@ test('adopts an existing portal-created MI300X lease without creating another Dr
   const capacity = await orchestrator.checkCapacity({ refresh: true })
   assert.equal(capacity.available, true)
   assert.equal(capacity.existingLease, true)
+  assert.equal(capacity.persistentLease, true)
+  assert.equal(capacity.releasePolicy, 'retain_after_job')
   const lease = await orchestrator.startLease()
   assert.equal(lease.id, '583920869')
   assert.equal(lease.adopted, true)
+  assert.equal(lease.persistent, true)
+  assert.equal(lease.releasePolicy, 'retain_after_job')
   assert.equal(lease.size, 'gpu-mi300x1-192gb-devcloud')
   assert.ok(!requests.some((request) => request.method === 'POST'))
+})
+
+test('retains a persistent MI300X lease even when release is requested', async () => {
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
+    if (url.endsWith('/droplets/584070698')) {
+      return json({ droplet: { id: 584070698, tags: ['rukter-product-story-persistent'] } })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({ token: 'do-token', fetchImpl })
+  const inspected = await orchestrator.inspectLease('584070698')
+  assert.equal(inspected.lifecycle, 'persistent')
+  assert.equal(inspected.releasePolicy, 'retain_after_job')
+  const result = await orchestrator.releaseLease('584070698')
+  assert.equal(result.status, 'retained')
+  assert.equal(result.billing, 'persistent_active')
+  assert.equal(result.releasePolicy, 'retain_after_job')
+  assert.ok(!requests.some((request) => request.method === 'DELETE'))
+})
+
+test('never reaps a persistent Droplet even if it also has the ephemeral tag', async () => {
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
+    if (url.includes('/droplets?')) {
+      return json({ droplets: [{
+        id: 584070698,
+        created_at: createdAt,
+        tags: ['rukter-product-story-persistent', 'rukter-product-story-ephemeral'],
+      }] })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    fetchImpl,
+    now: () => new Date('2026-07-11T23:00:00Z').getTime(),
+  })
+  const result = await orchestrator.reapExpiredLeases()
+  assert.deepEqual(result.released, [])
+  assert.deepEqual(result.protected, ['584070698'])
+  assert.ok(!requests.some((request) => request.method === 'DELETE'))
+})
+
+test('refuses to release an unmanaged GPU Droplet', async () => {
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
+    if (url.endsWith('/droplets/999')) return json({ droplet: { id: 999, tags: [] } })
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({ token: 'do-token', fetchImpl })
+  await assert.rejects(() => orchestrator.releaseLease('999'), /unmanaged/i)
+  assert.ok(!requests.some((request) => request.method === 'DELETE'))
 })

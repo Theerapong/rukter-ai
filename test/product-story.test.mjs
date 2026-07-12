@@ -136,6 +136,117 @@ test('always releases an AMD GPU lease after worker failure', async () => {
   assert.ok(requests.some((request) => request.url.endsWith('/v1/leases/lease-1/release')))
 })
 
+test('retains a persistent AMD GPU lease after worker failure', async () => {
+  const events = []
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/v1/leases')) {
+      return new Response(JSON.stringify({
+        id: '584070698',
+        status: 'ready',
+        workerUrl: 'https://worker.example',
+        gpuDevice: 'AMD Instinct MI300X',
+        releasePolicy: 'retain_after_job',
+      }))
+    }
+    if (url.endsWith('/v1/story-jobs')) return new Response(JSON.stringify({ error: 'worker failed' }), { status: 500 })
+    if (url.endsWith('/release')) {
+      return new Response(JSON.stringify({
+        id: '584070698',
+        status: 'retained',
+        billing: 'persistent_active',
+        releasePolicy: 'retain_after_job',
+      }))
+    }
+    return new Response('{}')
+  }
+  await assert.rejects(() => runAmdStoryJob({
+    orchestratorUrl: 'https://orchestrator.example',
+    story: {},
+    sourceImages: sources,
+    fetchImpl,
+    pollIntervalMs: 1,
+    onEvent: (event) => events.push(event.type),
+  }), /worker failed/)
+  assert.ok(events.includes('lease_retained'))
+  assert.ok(!events.includes('lease_released'))
+})
+
+test('cancels the active persistent worker job before retaining the GPU', async () => {
+  const requests = []
+  const events = []
+  const controller = new AbortController()
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
+    if (url.endsWith('/v1/leases')) {
+      return new Response(JSON.stringify({
+        id: '584070698',
+        status: 'ready',
+        workerUrl: 'https://worker.example',
+        releasePolicy: 'retain_after_job',
+      }))
+    }
+    if (url.endsWith('/v1/story-jobs') && options.method === 'POST') {
+      setImmediate(() => controller.abort(new Error('Cancelled by user.')))
+      return new Response(JSON.stringify({ jobId: 'worker-job-persistent' }))
+    }
+    if (url.endsWith('/v1/story-jobs/worker-job-persistent/cancel')) {
+      return new Response(JSON.stringify({ status: 'cancelled' }))
+    }
+    if (url.endsWith('/release')) {
+      return new Response(JSON.stringify({ status: 'retained', releasePolicy: 'retain_after_job' }))
+    }
+    return new Response('{}')
+  }
+  await assert.rejects(() => runAmdStoryJob({
+    orchestratorUrl: 'https://orchestrator.example',
+    story: {},
+    sourceImages: sources,
+    signal: controller.signal,
+    fetchImpl,
+    pollIntervalMs: 1,
+    onEvent: (event) => events.push(event.type),
+  }), /Cancelled by user/)
+  assert.ok(requests.some((request) => request.url.endsWith('/v1/story-jobs/worker-job-persistent/cancel')))
+  assert.ok(events.includes('lease_retained'))
+})
+
+test('cancels an unfinished persistent worker job after a polling failure', async () => {
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
+    if (url.endsWith('/v1/leases')) {
+      return new Response(JSON.stringify({
+        id: '584070698',
+        status: 'ready',
+        workerUrl: 'https://worker.example',
+        releasePolicy: 'retain_after_job',
+      }))
+    }
+    if (url.endsWith('/v1/story-jobs') && options.method === 'POST') {
+      return new Response(JSON.stringify({ jobId: 'worker-job-unfinished' }))
+    }
+    if (url.endsWith('/v1/story-jobs/worker-job-unfinished') && options.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'worker status unavailable' }), { status: 502 })
+    }
+    if (url.endsWith('/v1/story-jobs/worker-job-unfinished/cancel')) {
+      return new Response(JSON.stringify({ status: 'cancelled' }))
+    }
+    if (url.endsWith('/release')) {
+      return new Response(JSON.stringify({ status: 'retained', releasePolicy: 'retain_after_job' }))
+    }
+    return new Response('{}')
+  }
+  await assert.rejects(() => runAmdStoryJob({
+    orchestratorUrl: 'https://orchestrator.example',
+    story: {},
+    sourceImages: sources,
+    fetchImpl,
+    pollIntervalMs: 1,
+  }), /worker status unavailable/)
+  assert.ok(requests.some((request) => request.url.endsWith('/v1/story-jobs/worker-job-unfinished/cancel')))
+  assert.ok(requests.some((request) => request.url.endsWith('/v1/leases/584070698/release')))
+})
+
 test('polls an asynchronous MI300X lease until the ROCm worker is ready', async () => {
   const events = []
   let leaseReads = 0

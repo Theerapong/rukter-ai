@@ -165,6 +165,12 @@ variable "amd_gpu_capacity_poll_ms" {
   default     = 30000
 }
 
+variable "amd_gpu_persistent_tag" {
+  type        = string
+  description = "Tag for an owner-funded AMD GPU worker that must be retained between Product Story jobs and excluded from TTL reaping."
+  default     = "rukter-product-story-persistent"
+}
+
 variable "amd_gpu_worker_source_base_url" {
   type        = string
   description = "Public source URL used by cloud-init to bootstrap the AMD cinematic worker."

@@ -90,6 +90,13 @@ test('compiles Product DNA and Fireworks shot directives into product-specific p
           environment: 'Dark neutral studio with no props.',
           action: 'Move the camera only; keep the bottle stationary.',
           transition: 'Cut on a matching highlight.',
+          shotRole: 'macro-to-hero label reveal with a stable complete bottle end frame.',
+          lens: '70mm macro product lens resolving into a full bottle view.',
+          depthPlan: 'Begin close on label depth, then settle focus across the dropper and bottle.',
+          lightingTransition: 'Amber rim light sweeps from cap edge to front label.',
+          sceneDynamics: 'Only reflection and background shadow drift behind the bottle.',
+          composition: 'Bottle remains large, centered, and complete with clean label margins.',
+          stagecraft: 'Dark reflective stage with no props or extra skincare objects.',
           identityLocks: ['White rectangular front-label geometry'],
           allowedChanges: ['camera position', 'studio lighting'],
           forbiddenChanges: ['dropper shape', 'label text'],
@@ -109,6 +116,14 @@ test('compiles Product DNA and Fireworks shot directives into product-specific p
   assert.match(plan.shots[0].cinematicPrompt, /RUKTER SERUM/)
   assert.match(plan.shots[0].cinematicPrompt, /small front-label text may warp/)
   assert.match(plan.shots[0].cinematicPrompt, /Slow five-degree orbit around the label side/)
+  assert.match(plan.shots[0].cinematicPrompt, /Shot role: macro-to-hero label reveal/)
+  assert.match(plan.shots[0].cinematicPrompt, /Lens and framing: 70mm macro product lens/)
+  assert.match(plan.shots[0].cinematicPrompt, /Depth plan: Begin close on label depth/)
+  assert.match(plan.shots[0].cinematicPrompt, /Lighting transition: Amber rim light sweeps/)
+  assert.match(plan.shots[0].cinematicPrompt, /Scene dynamics: Only reflection and background shadow drift/)
+  assert.match(plan.shots[0].cinematicPrompt, /moving product film, not a still catalog image/)
+  assert.equal(plan.shots[0].director.lens, '70mm macro product lens resolving into a full bottle view.')
+  assert.equal(plan.shots[0].director.sceneDynamics, 'Only reflection and background shadow drift behind the bottle.')
   assert.match(plan.shots[0].negativePrompt, /changed label text/)
   assert.doesNotMatch(plan.shots[0].negativePrompt, /luggage|wheels|handles|shell pattern/i)
   assert.equal(plan.shots[0].allowPeople, false, 'an explicit no-people request must override the AI directive')
@@ -233,7 +248,12 @@ test('directs AMD Cinematic as verified multi-clip generation rather than browse
   assert.ok(plan.shots.every((shot) => shot.generation.model === 'Wan2.2-TI2V-5B'))
   assert.ok(plan.shots.every((shot) => shot.generation.task === 'text_guided_image_to_video'))
   assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'AMD ROCm'))
-  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Clear evidence-led sequencing')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('A precise evidence-led product film')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Depth plan:')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Lighting transition:')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Scene dynamics:')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('moving product film, not a still catalog image')))
+  assert.ok(plan.shots.every((shot) => shot.director.lens))
   assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Product-centered commercial frame with no people')))
   assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('no hands, no fingers, no arms, no body parts')))
   assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('hand')))
@@ -493,6 +513,10 @@ test('gates AMD rendering behind an owner session approval and trusted uploads',
   assert.match(storyPromptSource, /Campaign goal:/)
   assert.match(storyPromptSource, /Scene policy:/)
   assert.match(storyPromptSource, /People policy:/)
+  assert.match(storyPromptSource, /shotRole, lens, depthPlan, lightingTransition, sceneDynamics, composition, and stagecraft/)
+  assert.match(storyPromptSource, /real cinematic progression, not static catalog stills/)
+  assert.match(serverSource, /lightingTransition: \{ type: 'string' \}/)
+  assert.match(serverSource, /sceneDynamics: \{ type: 'string' \}/)
   assert.match(storyPromptSource, /visibleText must reproduce exact source characters/)
   assert.doesNotMatch(storyPromptSource, /storefrontLayout|mediaPlan|socialCaptions|dashboardReview/)
   assert.match(serverSource, /gpuZeroIdlePolicy: amdGpuAlwaysOnEnabled \? 'disabled_for_persistent'/)

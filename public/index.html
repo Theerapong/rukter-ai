@@ -6,7 +6,7 @@
     <title>Rukter.ai - Product Story Director</title>
     <meta name="description" content="Turn product photos into a directed product story with visible AI activity and zero-idle AMD GPU compute.">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Arial' font-size='18' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260711story1">
+    <link rel="stylesheet" href="/styles.css?v=20260712style1">
   </head>
   <body data-view="upload">
     <header class="app-header">
@@ -75,6 +75,27 @@
                 <i id="amdModeState">Checking</i>
               </label>
             </div>
+            <fieldset class="style-fieldset">
+              <legend>Video style</legend>
+              <div class="style-selector" role="radiogroup" aria-label="Video style">
+                <label class="style-option">
+                  <input type="radio" name="storyStyle" value="cinematic_film" checked>
+                  <span><strong>Cinematic Product Film</strong><small>Slow reveal · premium light</small></span>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="storyStyle" value="social_commerce">
+                  <span><strong>Social Commerce</strong><small>Fast hook · clear payoff</small></span>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="storyStyle" value="luxury_editorial">
+                  <span><strong>Luxury Editorial</strong><small>Quiet pace · tactile detail</small></span>
+                </label>
+                <label class="style-option">
+                  <input type="radio" name="storyStyle" value="technical_demo">
+                  <span><strong>Technical Demo</strong><small>Evidence first · precise motion</small></span>
+                </label>
+              </div>
+            </fieldset>
             <button id="capacityButton" class="capacity-button" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6"/></svg>
               <span><strong>Check AMD capacity</strong><small>Live check only · no GPU billing</small></span>
@@ -144,6 +165,7 @@
           </div>
           <dl class="job-facts">
             <div><dt>Mode</dt><dd id="jobMode">Motion Preview</dd></div>
+            <div><dt>Style</dt><dd id="storyStyleState">Cinematic Product Film</dd></div>
             <div><dt>Worker</dt><dd id="workerState">Browser</dd></div>
             <div><dt>AMD GPU</dt><dd id="gpuState">Offline</dd></div>
             <div><dt>Billing</dt><dd id="billingState" class="safe">Inactive</dd></div>
@@ -170,6 +192,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script type="module" src="/app.js?v=20260711story1"></script>
+    <script type="module" src="/app.js?v=20260712style1"></script>
   </body>
 </html>

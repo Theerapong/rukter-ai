@@ -4,6 +4,7 @@ import {
   buildProductStoryPlan,
   createStoryActivity,
   normalizeStoryRequest,
+  normalizeStoryStyle,
   productStorySteps,
 } from '../lib/product-story.mjs'
 import { runAmdStoryJob } from '../lib/amd-story-orchestrator.mjs'
@@ -18,11 +19,16 @@ const sources = Array.from({ length: 5 }, (_, index) => ({
 }))
 
 test('normalizes Product Story requests to portable source images', () => {
-  const request = normalizeStoryRequest({ mode: 'amd_cinematic', aspect: '16:9', durationSeconds: 30, sourceImages: [...sources, ...sources] })
+  const request = normalizeStoryRequest({ mode: 'amd_cinematic', style: 'social_commerce', aspect: '16:9', durationSeconds: 30, sourceImages: [...sources, ...sources] })
   assert.equal(request.mode, 'amd_cinematic')
+  assert.equal(request.style, 'social_commerce')
   assert.equal(request.aspect, '16:9')
   assert.equal(request.durationSeconds, 20)
   assert.equal(request.sourceImages.length, 8)
+})
+
+test('falls back to a safe video style for unknown style ids', () => {
+  assert.equal(normalizeStoryStyle('unknown'), 'cinematic_film')
 })
 
 test('builds a source-preserving five-shot story without inventing product pixels', () => {
@@ -43,14 +49,15 @@ test('builds a source-preserving five-shot story without inventing product pixel
 
 test('directs AMD Cinematic as verified multi-clip generation rather than browser motion', () => {
   const plan = buildProductStoryPlan({
-    request: { mode: 'amd_cinematic', aspect: '16:9', sourceImages: sources },
+    request: { mode: 'amd_cinematic', style: 'technical_demo', aspect: '16:9', sourceImages: sources },
     kit: { productAnalysis: { productType: 'Carry-on suitcase' }, hero: {}, brandAngle: {} },
   })
   assert.equal(plan.output.composition, 'amd_gpu_multiclip')
   assert.equal(plan.output.format, 'video/mp4')
+  assert.equal(plan.styleLabel, 'Technical Demo')
   assert.equal(plan.identityGuard.rejectUnverifiedOutput, true)
   assert.ok(plan.shots.every((shot) => shot.generation.model === 'Wan2.2-TI2V-5B'))
-  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('cinematic lighting')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Clear evidence-led sequencing')))
   assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'reference_constrained_and_verified'))
 })
 

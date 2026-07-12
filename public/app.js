@@ -20,6 +20,7 @@ const computeNote = $('#computeNote')
 const aspect = $('#aspect')
 const market = $('#market')
 const brief = $('#brief')
+const storyStyleState = $('#storyStyleState')
 const activityList = $('#activityList')
 const elapsedTime = $('#elapsedTime')
 const jobWarning = $('#jobWarning')
@@ -86,6 +87,10 @@ function formatBytes(bytes) {
 
 function selectedMode() {
   return document.querySelector('input[name="storyMode"]:checked')?.value || 'fast_story'
+}
+
+function selectedStyle() {
+  return document.querySelector('input[name="storyStyle"]:checked')?.value || 'cinematic_film'
 }
 
 function updateGenerateAvailability() {
@@ -380,6 +385,7 @@ function renderJob(job) {
   storyTitle.textContent = job.plan?.title || 'Directing your product'
   stageKicker.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
   jobMode.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
+  storyStyleState.textContent = job.plan?.styleLabel || 'Cinematic Product Film'
   workerState.textContent = job.effectiveMode === 'amd_cinematic' ? (job.gpu?.device || 'AMD worker') : 'Browser compositor'
   gpuState.textContent = job.gpu?.status ? job.gpu.status.replaceAll('_', ' ') : 'Offline'
   const gpuBillingActive = job.gpu?.billing === 'active_for_job'
@@ -448,6 +454,7 @@ async function createStory() {
     }
     const payload = {
       mode: selectedMode(),
+      style: selectedStyle(),
       aspect: aspect.value,
       durationSeconds: 15,
       brief: brief.value,

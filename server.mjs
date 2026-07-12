@@ -100,6 +100,8 @@ const defaultFireworksFallbackModels = ['accounts/fireworks/models/gpt-oss-20b']
 const defaultFireworksVisionModel = 'accounts/fireworks/models/kimi-k2p6'
 const defaultFireworksRequestTimeoutMs = 24_000
 const defaultFireworksTotalTimeoutMs = 27_000
+const defaultFireworksStoryRequestTimeoutMs = 90_000
+const defaultFireworksStoryTotalTimeoutMs = 95_000
 const defaultFireworksMaxTokens = 4096
 const hackathonResponseBudgetMs = 30_000
 const amdGpuPublicUrl = process.env.RUKTER_AI_PUBLIC_URL || 'https://rukter.ai'
@@ -298,6 +300,22 @@ const launchKitResponseFormat = {
           },
         },
         dashboardReview: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+}
+
+const productStoryResponseFormat = {
+  type: 'json_schema',
+  json_schema: {
+    name: 'RukterProductStoryPlan',
+    schema: {
+      type: 'object',
+      required: ['productAnalysis', 'productDNA', 'videoDirection'],
+      properties: {
+        productAnalysis: launchKitResponseFormat.json_schema.schema.properties.productAnalysis,
+        productDNA: launchKitResponseFormat.json_schema.schema.properties.productDNA,
+        videoDirection: launchKitResponseFormat.json_schema.schema.properties.videoDirection,
       },
     },
   },
@@ -1533,6 +1551,30 @@ function buildAgentPrompt(input) {
   ].join('\n')
 }
 
+function buildProductStoryAgentPrompt(input) {
+  const sourceCount = Math.max(1, input.sourceImages?.length || (input.productImage ? 1 : 0))
+  return [
+    'You are the Rukter.ai Product Story Director. Analyze the supplied views of one real product and direct a product-specific video plan.',
+    'Return only valid JSON with exactly three top-level fields: productAnalysis, productDNA, and videoDirection.',
+    '{"productAnalysis":{"summary":"string","productType":"string","visibleDetails":["string"],"confidence":"string","needsReview":["string"]},"productDNA":{"category":"string","identitySummary":"string","identityLocks":["string"],"materials":["string"],"colors":["string"],"brandMarks":["string"],"visibleText":["string"],"components":["string"],"visualRisks":["string"],"motionAffordances":["string"]},"videoDirection":{"concept":"string","storyArc":"string","pacing":"string","scenePolicy":"string","shots":[{"purpose":"string","sourceViewIndex":1,"caption":"string","camera":"string","lighting":"string","environment":"string","action":"string","transition":"string","identityLocks":["string"],"allowedChanges":["string"],"forbiddenChanges":["string"],"allowPeople":false}]}}',
+    `Compare all ${sourceCount} source view${sourceCount === 1 ? '' : 's'} before describing the product. Treat the pixels as the primary evidence and never import category stereotypes or components that are not visible.`,
+    'productDNA must describe this exact visible instance. identityLocks must name concrete shape, construction, color, material, mark, label, and component details that the renderer must preserve. Use empty arrays where evidence is uncertain.',
+    'visibleText must reproduce exact source characters in their original script. Identity locks and brand marks may repeat that exact text. All other fields must be concise English.',
+    'Do not invent ingredients, dimensions, certifications, origin, performance, price, popularity, medical claims, use claims, props, packaging, or body interaction. Put uncertain facts in needsReview.',
+    'Create 4 or 5 directed shots. Select the strongest source view for each beat and make camera, lighting, environment, action, transition, allowed changes, and forbidden changes specific to the visible product evidence.',
+    'The product must remain complete, dominant, unobstructed, and visually unchanged. Camera, background, and lighting may move; product geometry, components, labels, colors, and printed text may not mutate.',
+    'Set allowPeople to false unless the supplied people policy explicitly permits background-only people. Even then, people must never touch, overlap, or occlude the product.',
+    `Campaign goal: ${input.videoRequest?.campaignGoal || 'Create a clear product-first reveal and final payoff.'}`,
+    `Scene policy: ${input.videoRequest?.scenePolicy || 'Choose a scene grounded in the visible product evidence.'}`,
+    `People policy: ${input.videoRequest?.peoplePolicy || 'No people or body parts.'}`,
+    `Video style: ${input.videoRequest?.style || 'cinematic product film'}`,
+    `Aspect and duration: ${input.videoRequest?.aspect || '9:16'}, ${input.videoRequest?.durationSeconds || 8} seconds.`,
+    `Optional seller notes: ${input.brief || 'None.'}`,
+    `Source view labels: ${input.sourceImages?.length ? input.sourceImages.map((image, index) => `${index + 1}. ${image.label || image.name || 'Product view'}`).join(' | ') : '1. Primary product view'}`,
+    'Do not include markdown or any fields outside the requested JSON object.',
+  ].join('\n')
+}
+
 function extractJsonObject(text) {
   const trimmed = String(text || '').trim()
   if (!trimmed) throw new Error('Empty model response.')
@@ -1819,15 +1861,25 @@ function positiveNumber(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-function fireworksRuntimeConfig() {
+function isProductStoryInference(input) {
+  return Boolean(input?.videoRequest?.style && hasProductImage(input))
+}
+
+function fireworksRuntimeConfig(input) {
+  const productStory = isProductStoryInference(input)
   return {
-    requestTimeoutMs: positiveNumber(process.env.FIREWORKS_REQUEST_TIMEOUT_MS, defaultFireworksRequestTimeoutMs),
-    totalTimeoutMs: positiveNumber(process.env.FIREWORKS_TOTAL_TIMEOUT_MS, defaultFireworksTotalTimeoutMs),
+    requestTimeoutMs: productStory
+      ? positiveNumber(process.env.FIREWORKS_STORY_REQUEST_TIMEOUT_MS, defaultFireworksStoryRequestTimeoutMs)
+      : positiveNumber(process.env.FIREWORKS_REQUEST_TIMEOUT_MS, defaultFireworksRequestTimeoutMs),
+    totalTimeoutMs: productStory
+      ? positiveNumber(process.env.FIREWORKS_STORY_TOTAL_TIMEOUT_MS, defaultFireworksStoryTotalTimeoutMs)
+      : positiveNumber(process.env.FIREWORKS_TOTAL_TIMEOUT_MS, defaultFireworksTotalTimeoutMs),
     maxTokens: Math.round(positiveNumber(process.env.FIREWORKS_MAX_TOKENS, defaultFireworksMaxTokens)),
   }
 }
 
 function responseFormatFor(input) {
+  if (isProductStoryInference(input)) return structuredClone(productStoryResponseFormat)
   const responseFormat = structuredClone(launchKitResponseFormat)
   if (hasProductImage(input)) {
     responseFormat.json_schema.schema.properties.productDetections.minItems = 1
@@ -1848,7 +1900,10 @@ function fireworksVisionContent(input) {
     content.push({ type: 'text', text: `Source view ${index + 2}: ${image.label || image.name || 'Product view'}` })
     content.push({ type: 'image_url', image_url: { url: image.url } })
   }
-  content.push({ type: 'text', text: buildAgentPrompt(input) })
+  content.push({
+    type: 'text',
+    text: isProductStoryInference(input) ? buildProductStoryAgentPrompt(input) : buildAgentPrompt(input),
+  })
   return content
 }
 
@@ -1906,7 +1961,11 @@ async function callFireworksModel({ apiKey, baseUrl, input, model, timeoutMs, ma
   if (!content) {
     throw new Error(`Fireworks response did not include message content${finishReason ? ` (finish_reason=${finishReason})` : ''}.`)
   }
-  const kit = sanitizeEnglishLaunchKit(assertLaunchKitSchema(extractJsonObject(content)))
+  const parsed = extractJsonObject(content)
+  const completed = isProductStoryInference(input)
+    ? { ...fallbackLaunchKit(input), ...parsed }
+    : parsed
+  const kit = sanitizeEnglishLaunchKit(assertLaunchKitSchema(completed))
   return assertEnglishLaunchKit(kit)
 }
 
@@ -1919,7 +1978,7 @@ async function callFireworksInference(input) {
   const errors = []
   const attempts = []
   const startedAt = Date.now()
-  const runtimeConfig = fireworksRuntimeConfig()
+  const runtimeConfig = fireworksRuntimeConfig(input)
   const { requestTimeoutMs, totalTimeoutMs } = runtimeConfig
   const maxTokens = input.videoRequest?.style
     ? Math.max(runtimeConfig.maxTokens, 4096)
@@ -2901,7 +2960,11 @@ async function buildStoryLaunchKit(input) {
   let model = ''
   let inferenceMeta = null
   let modelWarning = ''
-  const maxAttempts = process.env.FIREWORKS_API_KEY ? 2 : 1
+  // A Product Story request has its own longer end-to-end Fireworks budget.
+  // Retrying the same heavy vision request here would multiply that budget and
+  // can make the approval screen appear stuck. Model fallbacks remain bounded
+  // inside callFireworksInference by the shared story deadline.
+  const maxAttempts = 1
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const generated = await callFireworksInference(input)
@@ -4579,6 +4642,8 @@ const server = http.createServer(async (req, res) => {
       responseBudgetMs: hackathonResponseBudgetMs,
       requestTimeoutMs: fireworksRuntimeConfig().requestTimeoutMs,
       totalTimeoutMs: fireworksRuntimeConfig().totalTimeoutMs,
+      storyRequestTimeoutMs: fireworksRuntimeConfig({ productImage: { url: '/uploads/story.jpg' }, videoRequest: { style: 'product_story' } }).requestTimeoutMs,
+      storyTotalTimeoutMs: fireworksRuntimeConfig({ productImage: { url: '/uploads/story.jpg' }, videoRequest: { style: 'product_story' } }).totalTimeoutMs,
       maxTokens: fireworksRuntimeConfig().maxTokens,
       runtimePlatform: `${process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`,
       mcpConfigured: Boolean(mcpAccessToken(req)),

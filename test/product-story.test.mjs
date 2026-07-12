@@ -441,6 +441,14 @@ test('builds a truthful Fireworks trace with observations and directed video pro
 
 test('gates AMD rendering behind an owner session approval and trusted uploads', () => {
   const serverSource = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+  const storySchemaSource = serverSource.slice(
+    serverSource.indexOf('const productStoryResponseFormat'),
+    serverSource.indexOf('const mimeTypes'),
+  )
+  const storyPromptSource = serverSource.slice(
+    serverSource.indexOf('function buildProductStoryAgentPrompt'),
+    serverSource.indexOf('function extractJsonObject'),
+  )
   assert.match(serverSource, /ensureStorySession\(req, res\)/)
   assert.match(serverSource, /rk_ai_story_session/)
   assert.match(serverSource, /ownerSessionId/)
@@ -473,6 +481,20 @@ test('gates AMD rendering behind an owner session approval and trusted uploads',
   assert.match(serverSource, /metadata\.pageHeight/)
   assert.match(serverSource, /allowPeople: \{ type: 'boolean' \}/)
   assert.match(serverSource, /defaultFireworksMaxTokens = 4096/)
+  assert.match(serverSource, /name: 'RukterProductStoryPlan'/)
+  assert.match(serverSource, /required: \['productAnalysis', 'productDNA', 'videoDirection'\]/)
+  assert.match(serverSource, /defaultFireworksStoryRequestTimeoutMs = 90_000/)
+  assert.match(serverSource, /defaultFireworksStoryTotalTimeoutMs = 95_000/)
+  assert.match(serverSource, /const maxAttempts = 1/)
+  assert.match(storySchemaSource, /productAnalysis: launchKitResponseFormat/)
+  assert.match(storySchemaSource, /productDNA: launchKitResponseFormat/)
+  assert.match(storySchemaSource, /videoDirection: launchKitResponseFormat/)
+  assert.doesNotMatch(storySchemaSource, /productDetections|storefrontLayout|mediaPlan|seo|socialCaptions/)
+  assert.match(storyPromptSource, /Campaign goal:/)
+  assert.match(storyPromptSource, /Scene policy:/)
+  assert.match(storyPromptSource, /People policy:/)
+  assert.match(storyPromptSource, /visibleText must reproduce exact source characters/)
+  assert.doesNotMatch(storyPromptSource, /storefrontLayout|mediaPlan|socialCaptions|dashboardReview/)
   assert.match(serverSource, /gpuZeroIdlePolicy: amdGpuAlwaysOnEnabled \? 'disabled_for_persistent'/)
   assert.match(serverSource, /amdGpuAutoShutdown: false/)
   assert.match(serverSource, /The persistent AMD worker remains online and credits continue/)

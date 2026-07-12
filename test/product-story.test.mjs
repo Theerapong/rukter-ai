@@ -7,6 +7,7 @@ import {
   normalizeStoryRequest,
   normalizeStoryStyle,
   productStorySteps,
+  shouldSyncAmdQueuePreparation,
 } from '../lib/product-story.mjs'
 import { runAmdStoryJob } from '../lib/amd-story-orchestrator.mjs'
 
@@ -30,6 +31,13 @@ test('normalizes Product Story requests to portable source images', () => {
 
 test('falls back to a safe video style for unknown style ids', () => {
   assert.equal(normalizeStoryStyle('unknown'), 'cinematic_film')
+})
+
+test('does not regress an active AMD job back into capacity checking', () => {
+  assert.equal(shouldSyncAmdQueuePreparation('waiting_for_gpu'), true)
+  assert.equal(shouldSyncAmdQueuePreparation('gpu_starting'), false)
+  assert.equal(shouldSyncAmdQueuePreparation('generating'), false)
+  assert.equal(shouldSyncAmdQueuePreparation('cancelling'), false)
 })
 
 test('builds a source-preserving five-shot story without inventing product pixels', () => {

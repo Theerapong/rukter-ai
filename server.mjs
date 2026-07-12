@@ -22,6 +22,7 @@ import {
   createStoryActivity,
   normalizeStoryRequest,
   productStoryLimits,
+  shouldSyncAmdQueuePreparation,
 } from './lib/product-story.mjs'
 import { runAmdStoryJob } from './lib/amd-story-orchestrator.mjs'
 import { createDigitalOceanGpuOrchestrator } from './lib/digitalocean-gpu-orchestrator.mjs'
@@ -2106,6 +2107,7 @@ function syncAmdStoryQueueState(snapshot) {
   for (const job of storyJobs.values()) {
     if (job.requestedMode !== 'amd_cinematic' || ['ready', 'failed', 'cancelled'].includes(job.status)) continue
     if (job.id === snapshot.activeId) {
+      if (!shouldSyncAmdQueuePreparation(job.status)) continue
       job.status = 'waiting_for_gpu'
       job.queue = {
         ...job.queue,

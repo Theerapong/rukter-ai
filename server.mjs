@@ -17,6 +17,7 @@ import {
   normalizeSourceViews,
 } from './lib/product-twin.mjs'
 import {
+  buildStoryAiTrace,
   buildProductStoryPlan,
   createStoryActivity,
   normalizeStoryRequest,
@@ -1046,14 +1047,16 @@ function fallbackLaunchKit(input) {
 }
 
 function buildAgentPrompt(input) {
+  const sourceCount = Math.max(1, input.sourceImages?.length || (input.productImage ? 1 : 0))
   return [
     'You are Rukter.ai Launch Agent, an ecommerce launch strategist and product-image analyst.',
     'Create a complete, practical launch kit for an independent seller.',
     'Return only valid JSON with this exact top-level schema:',
     '{"productAnalysis":{"summary":"string","productType":"string","visibleDetails":["string"],"confidence":"string","needsReview":["string"]},"productDetections":[{"label":"string","bbox":{"x":0,"y":0,"width":1000,"height":1000},"confidence":"string","rotationDegrees":0}],"creativeDirection":{"recommendedExperience":"editorial-monograph|botanical-cinema|object-gallery|tactile-commerce","artDirection":"string","tone":"string"},"brandAngle":{"positioning":"string","customer":"string","promise":"string"},"hero":{"headline":"string","subheading":"string","primaryCta":"string","secondaryCta":"string"},"storefrontLayout":[{"section":"string","purpose":"string","copy":"string","editableSlots":["string"]}],"mediaPlan":[{"slot":"string","direction":"string","assetKind":"string"}],"seo":{"title":"string","description":"string","keywords":["string"]},"socialCaptions":[{"channel":"string","caption":"string"}],"dashboardReview":["string"]}',
     'The output must be specific to the input and must be safe for an unpublished editable draft.',
-    'When a product image is attached, analyze the pixels as the primary product source. Identify the product category, visible packaging text, colors, materials, form, and apparent use.',
-    `When an image is attached, productDetections is required and must contain between 1 and ${maxProductAssets} boxes for the most visually prominent distinct sellable products. Bounding boxes use integer coordinates from 0 to 1000 relative to the full uploaded image. Keep each box tight around one complete product package and avoid price labels, shelves, faces, printed text fragments, and duplicate boxes.`,
+    `You received ${sourceCount} source view${sourceCount === 1 ? '' : 's'} of the same product. Compare all views before describing the product, and separate directly visible evidence from uncertain details.`,
+    'When product images are attached, analyze the pixels as the primary product source. Identify the product category, visible packaging text, colors, materials, form, and apparent use across the complete set of views.',
+    `When an image is attached, productDetections is required and must contain between 1 and ${maxProductAssets} boxes for the most visually prominent distinct sellable products in the FIRST source view. Bounding boxes use integer coordinates from 0 to 1000 relative to that complete first image. Keep each box tight around one complete product package and avoid price labels, shelves, faces, printed text fragments, and duplicate boxes.`,
     'For every productDetection, set rotationDegrees to 0, 90, 180, or 270 so printed packaging text reads naturally after clockwise rotation. Use 180 for an upside-down package and keep 0 when it is already upright.',
     'If the upload is a phone screenshot or contains browser/app UI around an embedded product photo, treat all UI chrome as context, not as a product. Locate products inside the embedded photo but keep every bounding-box coordinate relative to the complete uploaded screenshot.',
     'Never detect yellow shelf-price labels, barcodes, store signs, UI cards, preview frames, or captions as products. A valid detection must include the complete physical package or object, not only its logo or printed label.',
@@ -1077,7 +1080,8 @@ function buildAgentPrompt(input) {
     `Optional seller notes: ${input.brief || 'None. Analyze the product image without requiring seller notes.'}`,
     `Target channel: ${input.channel}`,
     `Target market: ${input.market}`,
-    `Product image metadata: ${input.productImage ? JSON.stringify(publicProductImageMeta(input.productImage)) : 'none'}`,
+    `Primary product image metadata: ${input.productImage ? JSON.stringify(publicProductImageMeta(input.productImage)) : 'none'}`,
+    `Source view labels: ${input.sourceImages?.length ? input.sourceImages.map((image, index) => `${index + 1}. ${image.label || image.name || 'Product view'}`).join(' | ') : 'none'}`,
   ].join('\n')
 }
 
@@ -1357,6 +1361,23 @@ function responseFormatFor(input) {
   return responseFormat
 }
 
+function fireworksVisionContent(input) {
+  if (!hasProductImage(input)) return buildAgentPrompt(input)
+  const content = []
+  const primaryUrl = input.productImage.dataUrl || input.productImage.url
+  if (primaryUrl) {
+    content.push({ type: 'text', text: `Source view 1: ${input.sourceImages?.[0]?.label || input.productImage.name || 'Primary product view'}` })
+    content.push({ type: 'image_url', image_url: { url: primaryUrl } })
+  }
+  for (const [index, image] of (input.sourceImages || []).slice(1, 8).entries()) {
+    if (!image.url) continue
+    content.push({ type: 'text', text: `Source view ${index + 2}: ${image.label || image.name || 'Product view'}` })
+    content.push({ type: 'image_url', image_url: { url: image.url } })
+  }
+  content.push({ type: 'text', text: buildAgentPrompt(input) })
+  return content
+}
+
 async function callFireworksModel({ apiKey, baseUrl, input, model, timeoutMs, maxTokens }) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -1382,12 +1403,7 @@ async function callFireworksModel({ apiKey, baseUrl, input, model, timeoutMs, ma
           },
           {
             role: 'user',
-            content: hasProductImage(input)
-              ? [
-                  { type: 'image_url', image_url: { url: input.productImage.dataUrl || input.productImage.url } },
-                  { type: 'text', text: buildAgentPrompt(input) },
-                ]
-              : buildAgentPrompt(input),
+            content: fireworksVisionContent(input),
           },
         ],
       }),
@@ -2006,6 +2022,7 @@ function publicStoryJob(job) {
     totalShots: job.plan?.shots?.length || Math.min(5, job.request.sourceImages.length),
     plan: job.plan || null,
     productAnalysis: job.productAnalysis || null,
+    aiDirection: job.aiDirection || null,
     output: job.output || null,
     gpu: job.gpu,
     warning: job.warning || '',
@@ -2046,6 +2063,8 @@ function storyDelay(ms, signal) {
 async function buildStoryLaunchKit(input) {
   let kit
   let mode = 'demo_fallback'
+  let model = ''
+  let inferenceMeta = null
   let modelWarning = ''
   const maxAttempts = process.env.FIREWORKS_API_KEY ? 2 : 1
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -2054,6 +2073,8 @@ async function buildStoryLaunchKit(input) {
       if (generated) {
         kit = generated.kit
         mode = 'fireworks_inference'
+        model = generated.model
+        inferenceMeta = generated.meta
         break
       }
     } catch (error) {
@@ -2071,7 +2092,7 @@ async function buildStoryLaunchKit(input) {
   )
   kit.creativeDirection = normalizeCreativeDirection(kit.creativeDirection)
   kit = enforceSellerVerifiedClaims(kit, input).kit
-  return { kit, mode }
+  return { kit, mode, model, inferenceMeta }
 }
 
 async function runFastStory(job, signal) {
@@ -2132,19 +2153,41 @@ async function processStoryJob(jobId) {
   try {
     updateStoryStep(job, 'source_upload', 'completed', `${job.request.sourceImages.length} source photos stored`)
     job.status = 'analyzing'
-    updateStoryStep(job, 'vision_analysis', 'active', 'Analyzing product identity and visible evidence', 10)
+    updateStoryStep(job, 'vision_analysis', 'active', `Sending ${job.request.sourceImages.length} product views to Fireworks AI`, 10)
     const generated = await buildStoryLaunchKit(job.input)
     if (controller.signal.aborted) throw controller.signal.reason
     job.productAnalysis = generated.kit.productAnalysis
+    job.aiDirection = buildStoryAiTrace({
+      kit: generated.kit,
+      mode: generated.mode,
+      model: generated.model,
+      sourceCount: job.request.sourceImages.length,
+      inferenceMeta: generated.inferenceMeta,
+    })
     if (generated.mode !== 'fireworks_inference' && generated.kit.modelWarning) {
       job.warning = `Vision provider fallback: ${generated.kit.modelWarning}`
     }
-    updateStoryStep(job, 'vision_analysis', 'completed', generated.mode === 'fireworks_inference' ? 'Fireworks vision analysis completed on AMD compute' : 'Local fallback analysis completed')
+    updateStoryStep(
+      job,
+      'vision_analysis',
+      'completed',
+      generated.mode === 'fireworks_inference'
+        ? `${generated.model.split('/').at(-1)} analyzed ${job.request.sourceImages.length} views on Fireworks AI`
+        : 'Local fallback analysis completed; no remote vision model was used',
+    )
 
-    updateStoryStep(job, 'storyboard', 'active', 'Directing product-safe story beats', 40)
+    updateStoryStep(job, 'storyboard', 'active', 'Turning visible product evidence into shot prompts', 40)
     job.plan = buildProductStoryPlan({ kit: generated.kit, request: job.request })
+    job.aiDirection = buildStoryAiTrace({
+      kit: generated.kit,
+      mode: generated.mode,
+      model: generated.model,
+      sourceCount: job.request.sourceImages.length,
+      plan: job.plan,
+      inferenceMeta: generated.inferenceMeta,
+    })
     await storyDelay(260, controller.signal)
-    updateStoryStep(job, 'storyboard', 'completed', `${job.plan.shots.length}-shot storyboard ready`)
+    updateStoryStep(job, 'storyboard', 'completed', `${job.plan.shots.length} text-guided video prompts ready`)
 
     const cinematicRequested = job.requestedMode === 'amd_cinematic'
     if (cinematicRequested && storyGpuEnabled()) {
@@ -2178,10 +2221,25 @@ async function processStoryJob(jobId) {
                 leaseId: cleanText(event.lease?.id, 120),
               }
               updateStoryStep(job, 'gpu_provision', 'completed', `${job.gpu.device || 'AMD GPU'} ready`)
-              updateStoryStep(job, 'motion_shots', 'active', 'Generating cinematic motion shots on AMD GPU', 0)
+              updateStoryStep(job, 'motion_shots', 'active', 'Loading Wan 2.2 text-image-to-video on AMD ROCm', 0)
             } else if (event.type === 'job_progress') {
               job.status = 'generating'
-              updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
+              const stage = cleanText(event.worker?.stage, 80)
+              if (stage === 'identity_check') {
+                const finalShot = Number(event.worker?.context?.shot) === Number(event.worker?.context?.totalShots)
+                if (finalShot) {
+                  updateStoryStep(job, 'motion_shots', 'completed', 'All text-guided Wan 2.2 shots generated')
+                  updateStoryStep(job, 'identity_check', 'active', event.detail, event.progress)
+                } else {
+                  updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
+                }
+              } else if (stage === 'video_composition' || stage === 'output_upload') {
+                updateStoryStep(job, 'motion_shots', 'completed', 'All text-guided Wan 2.2 shots generated')
+                updateStoryStep(job, 'identity_check', 'completed', 'Generated frames passed CLIP and OCR identity checks')
+                updateStoryStep(job, 'video_composition', 'active', event.detail, event.progress)
+              } else {
+                updateStoryStep(job, 'motion_shots', 'active', event.detail, event.progress)
+              }
             } else if (event.type === 'lease_release') {
               job.gpu.status = 'releasing'
               updateStoryStep(job, 'release_gpu', 'active', event.detail, 50)
@@ -2213,9 +2271,9 @@ async function processStoryJob(jobId) {
           durationSeconds: Number(result.durationSeconds) || job.plan.durationSeconds,
           evidence: result.evidence || null,
         }
-        updateStoryStep(job, 'motion_shots', 'completed', 'AMD cinematic motion shots generated')
-        updateStoryStep(job, 'identity_check', 'completed', 'AMD worker identity guard completed')
-        updateStoryStep(job, 'video_composition', 'completed', 'AMD cinematic video composed')
+        updateStoryStep(job, 'motion_shots', 'completed', 'Wan 2.2 text-guided video shots generated on AMD ROCm')
+        updateStoryStep(job, 'identity_check', 'completed', 'CLIP similarity and OCR retention checks passed')
+        updateStoryStep(job, 'video_composition', 'completed', 'Verified shots composed into the final MP4')
       } catch (error) {
         const releaseFailed = job.gpu?.status === 'release_failed'
         job.warning = releaseFailed
@@ -2313,6 +2371,11 @@ async function handleCreateStoryJob(req, res) {
     })
     const now = new Date().toISOString()
     const id = `story_${randomUUID().replaceAll('-', '')}`
+    const activity = createStoryActivity()
+    if (request.mode !== 'amd_cinematic') {
+      const generationStep = activity.find((step) => step.id === 'motion_shots')
+      if (generationStep) generationStep.label = 'Source motion preview'
+    }
     const job = {
       id,
       status: 'queued',
@@ -2320,10 +2383,11 @@ async function handleCreateStoryJob(req, res) {
       effectiveMode: request.mode === 'amd_cinematic' && storyGpuEnabled() ? 'amd_cinematic' : 'fast_story',
       request,
       input,
-      activity: createStoryActivity(),
+      activity,
       currentStep: 'source_upload',
       currentShot: 0,
       plan: null,
+      aiDirection: null,
       output: null,
       gpu: {
         status: 'offline',

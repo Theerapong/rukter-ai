@@ -68,6 +68,7 @@ let playbackStartedAt = 0
 let playbackOffset = 0
 let toastTimer = null
 let activeShotIndex = 0
+const expandedActivitySteps = new Set(['vision_analysis'])
 
 function showToast(message, duration = 4200) {
   clearTimeout(toastTimer)
@@ -295,11 +296,11 @@ async function uploadSource(source) {
 function initialActivity() {
   return [
     ['source_upload', 'Source upload'],
-    ['vision_analysis', 'Vision analysis'],
-    ['storyboard', 'Storyboard'],
-    ['gpu_provision', 'GPU provision'],
-    ['motion_shots', 'Motion shots'],
-    ['identity_check', 'Identity check'],
+    ['vision_analysis', 'Fireworks vision brief'],
+    ['storyboard', 'Video prompt direction'],
+    ['gpu_provision', 'AMD GPU provision'],
+    ['motion_shots', 'Text-guided video generation'],
+    ['identity_check', 'Product identity check'],
     ['video_composition', 'Video composition'],
     ['release_gpu', 'Release GPU'],
   ].map(([id, label]) => ({ id, label, status: 'pending', detail: 'Waiting', progress: 0 }))
@@ -312,7 +313,105 @@ function statusMarker(step, index) {
   return String(index + 1)
 }
 
-function renderActivity(activity = initialActivity()) {
+function appendTraceFact(list, label, value) {
+  const term = document.createElement('dt')
+  term.textContent = label
+  const detail = document.createElement('dd')
+  detail.textContent = value
+  list.append(term, detail)
+}
+
+function appendTraceList(container, label, items) {
+  if (!items?.length) return
+  const heading = document.createElement('b')
+  heading.textContent = label
+  const list = document.createElement('ul')
+  for (const value of items) {
+    const item = document.createElement('li')
+    item.textContent = value
+    list.append(item)
+  }
+  container.append(heading, list)
+}
+
+function activityTrace(step, job) {
+  const ai = job?.aiDirection
+  const prompts = ai?.prompts || []
+  if (!ai || !['vision_analysis', 'storyboard', 'motion_shots'].includes(step.id)) return null
+
+  const details = document.createElement('details')
+  details.className = 'activity-trace'
+  details.open = expandedActivitySteps.has(step.id)
+  const summary = document.createElement('summary')
+  summary.textContent = step.id === 'vision_analysis'
+    ? 'Model evidence'
+    : step.id === 'storyboard'
+      ? `${prompts.length} directed prompts`
+      : 'Generation runtime'
+  details.append(summary)
+
+  const body = document.createElement('div')
+  body.className = 'activity-trace-body'
+  const facts = document.createElement('dl')
+  if (step.id === 'vision_analysis') {
+    appendTraceFact(facts, 'Provider', ai.provider)
+    appendTraceFact(facts, 'Active model', ai.modelId.replace('accounts/fireworks/models/', ''))
+    appendTraceFact(facts, 'Input', `${ai.sourceCount} product view${ai.sourceCount === 1 ? '' : 's'}`)
+    if (ai.inferenceDurationMs) appendTraceFact(facts, 'Inference', `${(ai.inferenceDurationMs / 1000).toFixed(1)}s · ${ai.inferenceAttempts || 1} attempt${ai.inferenceAttempts === 1 ? '' : 's'}`)
+    appendTraceFact(facts, 'Role', ai.role)
+    body.append(facts)
+    if (!ai.gemmaActive && ai.provider === 'Fireworks AI') {
+      const truth = document.createElement('p')
+      truth.className = 'trace-truth'
+      truth.textContent = 'Gemma is not active for this run. The model named above produced this analysis.'
+      body.append(truth)
+    }
+    const summaryText = document.createElement('p')
+    summaryText.className = 'trace-summary'
+    summaryText.textContent = ai.summary
+    body.append(summaryText)
+    appendTraceList(body, 'What the model sees', ai.observations)
+    appendTraceList(body, 'Seller verification needed', ai.needsReview)
+    if (ai.confidence) appendTraceList(body, 'Confidence', [ai.confidence])
+  } else if (step.id === 'storyboard') {
+    const isGeneratedVideo = ai.generation?.task === 'text_guided_image_to_video'
+    appendTraceFact(facts, 'Prompt source', `${ai.provider} product evidence`)
+    appendTraceFact(facts, isGeneratedVideo ? 'Video model' : 'Preview engine', ai.generation?.model || 'Source Motion Preview')
+    appendTraceFact(facts, 'Task', isGeneratedVideo ? 'Text + source image to video' : 'Source-photo motion direction')
+    body.append(facts)
+    for (const prompt of prompts) {
+      const promptBlock = document.createElement('div')
+      promptBlock.className = 'trace-prompt'
+      const label = document.createElement('b')
+      label.textContent = `Shot ${prompt.shot} · ${prompt.sourceLabel}`
+      const text = document.createElement('p')
+      text.textContent = prompt.prompt
+      promptBlock.append(label, text)
+      body.append(promptBlock)
+    }
+  } else {
+    const isGeneratedVideo = ai.generation?.task === 'text_guided_image_to_video'
+    appendTraceFact(facts, isGeneratedVideo ? 'Model' : 'Engine', ai.generation?.model || 'Source Motion Preview')
+    appendTraceFact(facts, 'Task', isGeneratedVideo ? 'Text-guided image-to-video' : 'Source-photo animation')
+    appendTraceFact(facts, 'Compute', ai.generation?.runtime || 'Browser')
+    appendTraceFact(facts, 'Backend', ai.generation?.backend || 'Canvas')
+    body.append(facts)
+    const note = document.createElement('p')
+    note.className = 'trace-summary'
+    note.textContent = isGeneratedVideo
+      ? 'Each prompt conditions a real product view. Generated frames are accepted only after product identity checks.'
+      : 'The browser animates source pixels only. No generative video model or AMD GPU is used in Motion Preview.'
+    body.append(note)
+  }
+  details.append(body)
+  details.addEventListener('toggle', () => {
+    if (details.open) expandedActivitySteps.add(step.id)
+    else expandedActivitySteps.delete(step.id)
+  })
+  return details
+}
+
+function renderActivity(activity = initialActivity(), job = null) {
   activityList.replaceChildren(...activity.map((step, index) => {
     const item = document.createElement('li')
     item.className = `activity-step is-${step.status || 'pending'}`
@@ -325,7 +424,12 @@ function renderActivity(activity = initialActivity()) {
     detail.textContent = step.status === 'active' && step.progress
       ? `${step.detail} · ${Math.round(step.progress)}%`
       : step.detail
-    item.append(marker, title, detail)
+    const copy = document.createElement('div')
+    copy.className = 'activity-step-copy'
+    copy.append(title, detail)
+    const trace = activityTrace(step, job)
+    if (trace) copy.append(trace)
+    item.append(marker, copy)
     return item
   }))
 }
@@ -378,7 +482,7 @@ function friendlyStatus(status) {
 
 function renderJob(job) {
   currentJob = job
-  renderActivity(job.activity)
+  renderActivity(job.activity, job)
   jobId.textContent = job.id.replace('story_', '').slice(0, 10)
   jobId.title = job.id
   jobStatus.textContent = friendlyStatus(job.status)

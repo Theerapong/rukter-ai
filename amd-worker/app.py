@@ -62,6 +62,8 @@ async def collect_process_stream(stream, job: dict, parse_progress: bool = False
                 job.update(
                     progress=max(0, min(100, int(progress.get("progress", job.get("progress", 0))))),
                     detail=str(progress.get("detail", "Running Product Story pipeline on AMD GPU"))[:240],
+                    stage=str(progress.get("stage", job.get("stage", "video_generation")))[:80],
+                    context=progress.get("context") if isinstance(progress.get("context"), dict) else job.get("context"),
                     updatedAt=time.time(),
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -73,7 +75,7 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
     job = jobs[job_id]
     command = os.getenv("STORY_PIPELINE_COMMAND", "/opt/rukter/run_story_pipeline.sh")
     try:
-        job.update(status="running", progress=5, detail="Validating AMD ROCm device")
+        job.update(status="running", progress=5, detail="Validating AMD ROCm device", stage="gpu_validation")
         evidence = rocm_evidence()
         if not evidence["available"]:
             raise RuntimeError(f"AMD ROCm device is not ready: {evidence.get('reason', 'no compatible GPU found')}")
@@ -84,7 +86,7 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
             input_path = Path(directory) / "input.json"
             output_path = Path(directory) / "output.json"
             input_path.write_text(request.model_dump_json(), encoding="utf-8")
-            job.update(progress=15, detail="Running Product Story pipeline on AMD GPU")
+            job.update(progress=15, detail="Starting the Wan 2.2 video pipeline on AMD GPU", stage="model_loading")
             process = await asyncio.create_subprocess_exec(
                 command,
                 str(input_path),
@@ -123,7 +125,7 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
                 "identityVerified": True,
                 "shotCount": expected_shots,
             }
-            job.update(status="ready", progress=100, detail="AMD Product Story ready", **output)
+            job.update(status="ready", progress=100, detail="AMD Product Story ready", stage="complete", **output)
     except Exception as error:
         job.update(status="failed", progress=100, detail="AMD Product Story failed", error=str(error))
     finally:
@@ -148,6 +150,7 @@ def create_story_job(request: StoryRequest, background_tasks: BackgroundTasks, a
         "status": "queued",
         "progress": 0,
         "detail": "Queued on AMD GPU worker",
+        "stage": "queued",
         "createdAt": time.time(),
         "updatedAt": time.time(),
     }

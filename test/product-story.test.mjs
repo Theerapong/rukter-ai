@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildProductStoryPlan,
+  buildStoryAiTrace,
   createStoryActivity,
   normalizeStoryRequest,
   normalizeStoryStyle,
@@ -44,6 +45,8 @@ test('builds a source-preserving five-shot story without inventing product pixel
   assert.equal(plan.durationSeconds, 15)
   assert.equal(plan.shots.at(-1).endSeconds, 15)
   assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'source_preserved'))
+  assert.ok(plan.shots.every((shot) => shot.generation.task === 'source_photo_animation'))
+  assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'Browser'))
   assert.equal(plan.identityGuard.generativeProductAlteration, false)
 })
 
@@ -57,6 +60,8 @@ test('directs AMD Cinematic as verified multi-clip generation rather than browse
   assert.equal(plan.styleLabel, 'Technical Demo')
   assert.equal(plan.identityGuard.rejectUnverifiedOutput, true)
   assert.ok(plan.shots.every((shot) => shot.generation.model === 'Wan2.2-TI2V-5B'))
+  assert.ok(plan.shots.every((shot) => shot.generation.task === 'text_guided_image_to_video'))
+  assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'AMD ROCm'))
   assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Clear evidence-led sequencing')))
   assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'reference_constrained_and_verified'))
 })
@@ -65,6 +70,50 @@ test('creates an eight-step observable activity contract', () => {
   const activity = createStoryActivity()
   assert.equal(activity.length, productStorySteps.length)
   assert.deepEqual(activity.map((step) => step.status), Array(8).fill('pending'))
+  assert.equal(activity.find((step) => step.id === 'vision_analysis').label, 'Fireworks vision brief')
+  assert.equal(activity.find((step) => step.id === 'motion_shots').label, 'Text-guided video generation')
+})
+
+test('builds a truthful Fireworks trace with observations and directed video prompts', () => {
+  const plan = buildProductStoryPlan({
+    request: { mode: 'amd_cinematic', sourceImages: sources },
+    kit: {
+      productAnalysis: {
+        productType: 'Carry-on suitcase',
+        summary: 'A ribbed hard-shell suitcase with four spinner wheels.',
+        visibleDetails: ['Ribbed shell', 'Four spinner wheels'],
+        confidence: 'High for visible form.',
+        needsReview: ['Confirm shell material.'],
+      },
+      hero: {},
+      brandAngle: {},
+    },
+  })
+  const trace = buildStoryAiTrace({
+    kit: {
+      productAnalysis: {
+        productType: 'Carry-on suitcase',
+        summary: 'A ribbed hard-shell suitcase with four spinner wheels.',
+        visibleDetails: ['Ribbed shell', 'Four spinner wheels'],
+        confidence: 'High for visible form.',
+        needsReview: ['Confirm shell material.'],
+      },
+    },
+    mode: 'fireworks_inference',
+    model: 'accounts/fireworks/models/kimi-k2p6',
+    sourceCount: 5,
+    plan,
+    inferenceMeta: { durationMs: 8420, attempts: [{ model: 'accounts/fireworks/models/kimi-k2p6', status: 'ok' }] },
+  })
+  assert.equal(trace.provider, 'Fireworks AI')
+  assert.equal(trace.gemmaActive, false)
+  assert.equal(trace.sourceCount, 5)
+  assert.equal(trace.inferenceDurationMs, 8420)
+  assert.equal(trace.inferenceAttempts, 1)
+  assert.deepEqual(trace.observations, ['Ribbed shell', 'Four spinner wheels'])
+  assert.equal(trace.prompts.length, 5)
+  assert.match(trace.prompts[0].prompt, /exact product identity/)
+  assert.equal(trace.generation.task, 'text_guided_image_to_video')
 })
 
 test('always releases an AMD GPU lease after worker failure', async () => {

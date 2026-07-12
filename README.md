@@ -144,7 +144,7 @@ export RUKTER_AI_PUBLIC_URL="https://rukter.ai"
 
 For production deploys, set `RUKTER_MCP_ACCESS_TOKEN` as a masked GitLab CI/CD variable. Terraform mounts it into the DigitalOcean App Platform runtime as a secret. If the variable is absent, the app still works through the browser OAuth connect flow.
 
-The browser normalizes WebP, AVIF, or GIF uploads to a vision-compatible JPEG, then uploads the selected product image to `rukter.ai`. The normalized image is also sent to Fireworks as an inline data URL, so inference does not depend on ephemeral container storage or routing to the same service instance. Fireworks Vision returns `productAnalysis`, storefront copy, and SEO in one request. The smaller public image metadata remains available for preview and the `create_home_page_draft` handoff.
+The browser normalizes WebP, AVIF, or GIF uploads to a vision-compatible JPEG, then uploads the selected product views to `rukter.ai`. The primary image is sent to Fireworks as an inline data URL and the remaining public view URLs are supplied in the same multimodal request. Fireworks Vision returns `productAnalysis`, visible evidence, storefront copy, and SEO. Product Story jobs also expose a sanitized AI trace with the actual model ID, observations, seller verification items, and the generated video prompts. The UI never labels a run as Gemma unless the model that answered has a Gemma model ID.
 
 Each isolated WebP is also exposed through a generated `/uploads/*.webp` URL. The MCP draft handoff prefers that clean product asset over the original background photo, so the editable Rukter draft starts from the same visual used by the embedded preview and exported ZIP.
 
@@ -203,7 +203,7 @@ The repo includes Terraform at `infra/terraform/environments/digitalocean` for t
 
 `POST /api/story-jobs`
 
-Starts an asynchronous Product Story job from three to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the eight-step activity log, storyboard, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` cancels work. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
+Starts an asynchronous Product Story job from three to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the eight-step activity log, model provenance, image observations, directed Wan prompts, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` cancels work. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
 
 The browser polls this job API, so a cinematic generation can take longer than the synchronous request limit without hiding progress or timing out the page. Job creation and status responses remain well under 30 seconds.
 
@@ -221,6 +221,8 @@ export AMD_GPU_PUBLIC_ENABLED="true"
 ```
 
 Keep `AMD_GPU_PUBLIC_ENABLED=false` until one complete create, render, identity-check, and destroy cycle has been observed.
+
+The current AMD worker runs Wan2.2 TI2V 5B directly through Diffusers on ROCm. This is text-guided image-to-video: each Fireworks-directed prompt is conditioned on a real product view, then sampled frames are checked with CLIP similarity and OCR retention. AMD also documents an equivalent headless ComfyUI HTTP workflow for Wan2.2 5B on MI300X. That service-oriented ComfyUI path is compatible with this job contract, but the UI reports `Diffusers` until the worker backend is actually switched and verified; it does not claim ComfyUI based only on documentation.
 
 `POST /api/launch-kit`
 

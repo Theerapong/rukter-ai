@@ -544,8 +544,8 @@ function resetStory() {
   activeShotIndex = 0
   timeline.replaceChildren()
   renderActivity()
-  computeBadge.classList.remove('is-active', 'is-safe')
-  computeBadge.querySelector('span').textContent = config.amdGpuCapacityState === 'unavailable' ? 'AMD capacity unavailable' : 'AMD GPU offline'
+  computeBadge.classList.remove('is-active')
+  renderCapacity(config)
   setView('upload')
   window.scrollTo(0, 0)
 }
@@ -714,7 +714,8 @@ async function loadConfig() {
   try {
     const response = await fetch('/api/config')
     config = await response.json()
-    renderCapacity(config)
+    if (config.amdGpuPublicEnabled) await checkGpuCapacity()
+    else renderCapacity(config)
   } catch {
     amdModeState.textContent = 'Offline'
     amdModeInput.disabled = true

@@ -6,7 +6,7 @@
     <title>Rukter.ai - Product Story Director</title>
     <meta name="description" content="Turn product photos into a directed product story with visible AI activity and zero-idle AMD GPU compute.">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Arial' font-size='18' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260713queue1">
+    <link rel="stylesheet" href="/styles.css?v=20260713render1">
   </head>
   <body data-view="upload">
     <header class="app-header">
@@ -113,6 +113,8 @@
             </button>
             <div class="direction-fields">
               <label><span>Format</span><select id="aspect"><option value="9:16">9:16 Story</option><option value="1:1">1:1 Square</option><option value="16:9">16:9 Landscape</option></select></label>
+              <label><span>Length</span><select id="durationSeconds"><option value="8" selected>8 sec · fastest</option><option value="12">12 sec · balanced</option><option value="15">15 sec · full story</option><option value="20">20 sec · longest</option></select></label>
+              <label><span>Resolution</span><select id="renderResolution"><option value="fast" selected>Fast · 384 × 672</option><option value="standard">Standard · 544 × 960</option><option value="detail">Detail · 640 × 1120</option></select></label>
             </div>
             <details class="optional-context">
               <summary>Optional product facts</summary>
@@ -203,6 +205,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script type="module" src="/app.js?v=20260713queue1"></script>
+    <script type="module" src="/app.js?v=20260713render1"></script>
   </body>
 </html>

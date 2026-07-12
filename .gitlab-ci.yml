@@ -45,7 +45,7 @@ node:smoke:
     - node --check public/app.js
     - node --check scripts/smoke.mjs
     - python3 -m py_compile amd-worker/app.py amd-worker/run_story_pipeline.py
-    - bash -n scripts/bootstrap-persistent-amd.sh amd-worker/bootstrap.sh amd-worker/run_story_pipeline.sh
+    - bash -n scripts/bootstrap-persistent-amd.sh scripts/wait-live-amd-queue-idle.sh amd-worker/bootstrap.sh amd-worker/run_story_pipeline.sh
     - unset FIREWORKS_API_KEY DIGITALOCEAN_TOKEN AMD_GPU_DIGITALOCEAN_TOKEN AMD_GPU_PUBLIC_ENABLED AMD_GPU_ORCHESTRATOR_URL
     - npm test
     - grep -Fq 'COPY amd-worker ./amd-worker' Dockerfile
@@ -211,6 +211,7 @@ terraform:apply:digitalocean:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - terraform -chdir="${TF_DO_ENV_DIR}" init -input=false
+    - bash scripts/wait-live-amd-queue-idle.sh
     - terraform -chdir="${TF_DO_ENV_DIR}" apply -parallelism=20 -auto-approve tfplan
     - terraform -chdir="${TF_DO_ENV_DIR}" output
   environment:

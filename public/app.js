@@ -22,6 +22,8 @@ const amdModeInput = $('#amdModeInput')
 const amdModeOption = $('#amdModeOption')
 const computeNote = $('#computeNote')
 const aspect = $('#aspect')
+const durationSeconds = $('#durationSeconds')
+const renderResolution = $('#renderResolution')
 const brief = $('#brief')
 const storyStyleState = $('#storyStyleState')
 const activityList = $('#activityList')
@@ -63,6 +65,11 @@ const maxImageBytes = 4_000_000
 const labels = ['Front', 'Angle', 'Side', 'Back', 'Detail', 'Texture', 'Scale', 'Hero']
 const terminalStates = new Set(['ready', 'failed', 'cancelled'])
 const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'])
+const renderResolutionOptions = {
+  fast: { label: 'Fast', dimensions: { '9:16': [384, 672], '1:1': [384, 384], '16:9': [672, 384] } },
+  standard: { label: 'Standard', dimensions: { '9:16': [544, 960], '1:1': [544, 544], '16:9': [960, 544] } },
+  detail: { label: 'Detail', dimensions: { '9:16': [640, 1120], '1:1': [640, 640], '16:9': [1120, 640] } },
+}
 
 let config = {}
 let sources = []
@@ -146,6 +153,15 @@ function selectedMode() {
 
 function selectedStyle() {
   return document.querySelector('input[name="storyStyle"]:checked')?.value || 'cinematic_film'
+}
+
+function updateRenderResolutionLabels() {
+  for (const option of renderResolution.options) {
+    const preset = renderResolutionOptions[option.value]
+    if (!preset) continue
+    const [width, height] = preset.dimensions[aspect.value] || preset.dimensions['9:16']
+    option.textContent = `${preset.label} · ${width} × ${height}`
+  }
 }
 
 function updateGenerateAvailability() {
@@ -862,6 +878,8 @@ function renderJob(job) {
   if (job.plan) {
     storyFrame.dataset.aspect = job.plan.aspect
     framePreparing.hidden = true
+    playbackOffset = Math.min(playbackOffset, job.plan.durationSeconds || playbackOffset)
+    updatePlayback(playbackOffset)
     if (!timeline.children.length) renderTimeline(job.plan)
     if (!storyImage.src) showShot(0, false)
     if (job.output?.videoUrl) {
@@ -920,7 +938,8 @@ async function createStory() {
       mode: selectedMode(),
       style: selectedStyle(),
       aspect: aspect.value,
-      durationSeconds: 15,
+      durationSeconds: Number(durationSeconds.value) || 8,
+      renderResolution: renderResolution.value,
       brief: brief.value,
       channel: 'DTC',
       productImage: { ...uploaded[0], dataUrl: sources[0].dataUrl },
@@ -1104,7 +1123,10 @@ async function exportBrowserVideo() {
   exportVideoButton.disabled = true
   exportStoryboardButton.disabled = true
   const plan = currentJob.plan
-  const dimensions = plan.aspect === '9:16' ? [720, 1280] : plan.aspect === '1:1' ? [900, 900] : [1280, 720]
+  const dimensions = [
+    Number(plan.output?.width) || (plan.aspect === '9:16' ? 720 : plan.aspect === '1:1' ? 900 : 1280),
+    Number(plan.output?.height) || (plan.aspect === '9:16' ? 1280 : plan.aspect === '1:1' ? 900 : 720),
+  ]
   const canvas = document.createElement('canvas')
   canvas.width = dimensions[0]
   canvas.height = dimensions[1]
@@ -1254,6 +1276,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') setQueuePopoverOpen(false)
 })
 document.querySelectorAll('input[name="storyMode"]').forEach((input) => input.addEventListener('change', updateGenerateAvailability))
+aspect.addEventListener('change', updateRenderResolutionLabels)
 newStoryButton.addEventListener('click', resetStory)
 cancelJobButton.addEventListener('click', cancelJob)
 releaseGpuButton.addEventListener('click', releaseGpu)
@@ -1270,4 +1293,5 @@ window.addEventListener('beforeunload', () => sources.forEach((source) => URL.re
 
 renderActivity()
 renderSources()
+updateRenderResolutionLabels()
 loadConfig().then(resumeStoryFromUrl)

@@ -106,6 +106,14 @@ test('ships live GPU telemetry through every AMD worker bootstrap path', () => {
   assert.match(server, /gpu_telemetry\.py/)
 })
 
+test('worker uses requested story output dimensions and short render shots', () => {
+  const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+  assert.match(pipeline, /output = story\.get\("output", \{\}\)/)
+  assert.match(pipeline, /output\.get\("width"\)/)
+  assert.match(pipeline, /output\.get\("height"\)/)
+  assert.match(pipeline, /max\(2, min\(5/)
+})
+
 test('parses rocm-smi JSON telemetry into bounded GPU metrics', () => {
   const result = runWorkerScript(`
 import json, sys

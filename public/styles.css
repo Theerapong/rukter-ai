@@ -117,7 +117,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .capacity-button small{font-size:9px;color:var(--muted)}
 .capacity-button i{font-size:9px;font-style:normal;font-weight:800;text-transform:uppercase;color:var(--red)}
 .capacity-button.is-ready i{color:var(--green)}
-.direction-fields{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
+.direction-fields{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px}
 .direction-fields label{display:flex;flex-direction:column;gap:7px}
 .direction-fields label>span{font-size:9px;font-weight:800;text-transform:uppercase}
 .direction-fields select,.optional-context textarea{width:100%;border:1px solid var(--line);background:#fff;padding:12px;border-radius:0;color:var(--ink)}

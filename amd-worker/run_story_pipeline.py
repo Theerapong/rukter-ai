@@ -107,7 +107,26 @@ def load_source(url: str) -> Image.Image:
         return Image.open(handle.name).convert("RGB")
 
 
-def output_size(aspect: str) -> tuple[int, int]:
+def normalized_dimension(value, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    if parsed <= 0:
+        return max(0, fallback)
+    bounded = max(256, min(1280, parsed))
+    # Wan/Diffusers paths are safest on dimensions aligned to 32px.
+    aligned = max(256, (bounded // 32) * 32)
+    return aligned
+
+
+def output_size(story: dict) -> tuple[int, int]:
+    output = story.get("output", {})
+    width = normalized_dimension(output.get("width"), 0)
+    height = normalized_dimension(output.get("height"), 0)
+    if width and height:
+        return width, height
+    aspect = story.get("aspect", "9:16")
     if aspect == "9:16":
         return 544, 960
     if aspect == "1:1":
@@ -230,7 +249,7 @@ def main() -> None:
     if not shots:
         raise RuntimeError("The cinematic storyboard contains no shots.")
 
-    width, height = output_size(story.get("aspect", "9:16"))
+    width, height = output_size(story)
     total_shots = len(shots)
     report_progress(
         16,
@@ -263,7 +282,7 @@ def main() -> None:
             {"shot": index + 1, "totalShots": total_shots, "prompt": prompt_excerpt},
         )
         source = resize_cover(load_source(shot["sourceUrl"]), width, height)
-        duration = max(3, min(5, int(shot.get("generation", {}).get("durationSeconds", 3))))
+        duration = max(2, min(5, int(float(shot.get("generation", {}).get("durationSeconds", 3)))))
         num_frames = wan_frame_count(duration)
         last_evidence = None
         verified_frames = None

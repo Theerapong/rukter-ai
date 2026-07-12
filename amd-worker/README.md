@@ -16,9 +16,9 @@ The input follows `rukter.product_story.v1` and contains one to eight public sou
 {
   "videoUrl": "https://.../story.mp4",
   "format": "video/mp4",
-  "width": 1080,
-  "height": 1920,
-  "durationSeconds": 15,
+  "width": 384,
+  "height": 672,
+  "durationSeconds": 8,
   "evidence": {
     "identityVerified": true,
     "shotCount": 5,
@@ -30,7 +30,7 @@ The input follows `rukter.product_story.v1` and contains one to eight public sou
 }
 ```
 
-The AMD pipeline is not a slideshow. It generates one 3-5 second Wan 2.2 TI2V clip per directed shot, verifies sampled frames with CLIP similarity and product-surface OCR retention, and composes accepted clips with FFmpeg into one color-graded MP4. OCR from editorial overlays, arrows, captions, or infographic labels is treated as annotation evidence instead of required product identity. A failed clip or missing shot fails the Cinematic job. It is never silently replaced with Motion Preview.
+The AMD pipeline is not a slideshow. It generates one 2-5 second Wan 2.2 TI2V clip per directed shot at the story plan's requested output dimensions, verifies sampled frames with CLIP similarity and product-surface OCR retention, and composes accepted clips with FFmpeg into one color-graded MP4. OCR from editorial overlays, arrows, captions, or infographic labels is treated as annotation evidence instead of required product identity. A failed clip or missing shot fails the Cinematic job. It is never silently replaced with Motion Preview.
 
 The worker is bootstrapped from this public repository on the official `rocm/pytorch` image. The repository's main judging container remains publicly available as Linux AMD64:
 

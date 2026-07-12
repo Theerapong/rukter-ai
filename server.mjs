@@ -2116,6 +2116,7 @@ function publicStoryJob(job) {
     style: job.request.style,
     aspect: job.request.aspect,
     durationSeconds: job.request.durationSeconds,
+    renderResolution: job.request.renderResolution,
     sourceImages: job.request.sourceImages,
     activity: job.activity,
     currentStep: job.currentStep,

@@ -6,6 +6,7 @@ import {
   buildStoryAiTrace,
   createStoryActivity,
   normalizeStoryRequest,
+  normalizeStoryResolution,
   normalizeStoryStyle,
   productStoryLimits,
   productStorySteps,
@@ -23,16 +24,37 @@ const sources = Array.from({ length: 5 }, (_, index) => ({
 }))
 
 test('normalizes Product Story requests to portable source images', () => {
-  const request = normalizeStoryRequest({ mode: 'amd_cinematic', style: 'social_commerce', aspect: '16:9', durationSeconds: 30, sourceImages: [...sources, ...sources] })
+  const request = normalizeStoryRequest({ mode: 'amd_cinematic', style: 'social_commerce', aspect: '16:9', durationSeconds: 30, renderResolution: 'detail', sourceImages: [...sources, ...sources] })
   assert.equal(request.mode, 'amd_cinematic')
   assert.equal(request.style, 'social_commerce')
   assert.equal(request.aspect, '16:9')
   assert.equal(request.durationSeconds, 20)
+  assert.equal(request.renderResolution, 'detail')
   assert.equal(request.sourceImages.length, 8)
 })
 
 test('falls back to a safe video style for unknown style ids', () => {
   assert.equal(normalizeStoryStyle('unknown'), 'cinematic_film')
+})
+
+test('falls back to the fast render resolution for unknown resolution ids', () => {
+  assert.equal(normalizeStoryResolution('unknown'), 'fast')
+})
+
+test('builds a fast AMD render budget with fewer pixels and shorter shots', () => {
+  const plan = buildProductStoryPlan({
+    request: { mode: 'amd_cinematic', renderResolution: 'fast', durationSeconds: 8, sourceImages: [sources[0]] },
+    kit: {
+      productAnalysis: { productType: 'Carry-on suitcase', visibleDetails: ['Ribbed shell'] },
+      hero: { headline: 'Fast render proof' },
+      brandAngle: {},
+    },
+  })
+  assert.equal(plan.durationSeconds, 8)
+  assert.equal(plan.renderResolution, 'fast')
+  assert.equal(plan.output.width, 384)
+  assert.equal(plan.output.height, 672)
+  assert.ok(plan.shots.every((shot) => shot.generation.durationSeconds === 2))
 })
 
 test('accepts one source photo for a Product Story', () => {
@@ -53,7 +75,7 @@ test('accepts one source photo for a Product Story', () => {
 test('keeps a one-photo AMD Cinematic job GPU-active with multiple directed shots', () => {
   assert.equal(productStoryLimits.minAmdCinematicShots, 4)
   const plan = buildProductStoryPlan({
-    request: { mode: 'amd_cinematic', sourceImages: [sources[0]] },
+    request: { mode: 'amd_cinematic', durationSeconds: 15, sourceImages: [sources[0]] },
     kit: {
       productAnalysis: { productType: 'Carry-on suitcase', visibleDetails: ['Ribbed shell'] },
       hero: { headline: 'One source, multiple GPU shots' },
@@ -79,7 +101,7 @@ test('does not regress an active AMD job back into capacity checking', () => {
 
 test('builds a source-preserving five-shot story without inventing product pixels', () => {
   const plan = buildProductStoryPlan({
-    request: { mode: 'fast_story', sourceImages: sources },
+    request: { mode: 'fast_story', durationSeconds: 15, sourceImages: sources },
     kit: {
       productAnalysis: { productType: 'Serum bottle', visibleDetails: ['30 ml glass bottle', 'Dropper cap'] },
       hero: { headline: 'A closer look', primaryCta: 'Explore product' },
@@ -150,6 +172,17 @@ test('keeps ready AMD videos from rendering as a black empty player before playb
   assert.match(appSource, /if \(generatedVideo\.getAttribute\('src'\) !== videoUrl\)/)
 })
 
+test('lets sellers choose video length and render resolution in the frontend', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  assert.match(htmlSource, /id="durationSeconds"/)
+  assert.match(htmlSource, /id="renderResolution"/)
+  assert.match(htmlSource, /8 sec · fastest/)
+  assert.match(appSource, /durationSeconds: Number\(durationSeconds\.value\) \|\| 8/)
+  assert.match(appSource, /renderResolution: renderResolution\.value/)
+  assert.match(appSource, /Number\(plan\.output\?\.width\)/)
+})
+
 test('shows privacy-safe AMD queue details from the runtime badge', () => {
   const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
   const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
@@ -161,6 +194,15 @@ test('shows privacy-safe AMD queue details from the runtime badge', () => {
   assert.match(appSource, /anonymous job/)
   assert.match(serverSource, /function publicAmdQueueSnapshot/)
   assert.match(serverSource, /other job ids and user details are not exposed/)
+})
+
+test('waits for the live AMD queue to become idle before production deploy', () => {
+  const ciSource = readFileSync(new URL('../.gitlab-ci.yml', import.meta.url), 'utf8')
+  const waitScript = readFileSync(new URL('../scripts/wait-live-amd-queue-idle.sh', import.meta.url), 'utf8')
+  assert.match(ciSource, /bash scripts\/wait-live-amd-queue-idle\.sh/)
+  assert.match(waitScript, /api\/story-queue/)
+  assert.match(waitScript, /activeJobPresent/)
+  assert.match(waitScript, /queuedJobs/)
 })
 
 test('builds a truthful Fireworks trace with observations and directed video prompts', () => {

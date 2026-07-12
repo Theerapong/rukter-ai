@@ -27,6 +27,12 @@ if (config.gpuPersistentPolicy !== 'retain_tagged_worker' || config.amdGpuPersis
 if (config.storyLimits?.minImages !== 1 || config.storyLimits?.maxImages !== 8) {
   throw new Error('Product Story source image limits are incorrect.')
 }
+if (JSON.stringify(config.storyLimits?.durationOptionsSeconds) !== JSON.stringify([8, 12, 15, 20])) {
+  throw new Error('Product Story duration options are not configured.')
+}
+if (!config.storyLimits?.renderResolutions?.some((preset) => preset.id === 'fast' && preset.dimensions?.['9:16']?.width === 384)) {
+  throw new Error('Product Story fast render resolution is not configured.')
+}
 const queueResponse = await fetch(`${baseUrl}/api/story-queue`, { signal: AbortSignal.timeout(5_000) })
 const queueSnapshot = await queueResponse.json()
 if (!queueResponse.ok || queueSnapshot.policy !== 'fifo' || queueSnapshot.concurrency !== 1 || !queueSnapshot.privacy) {

@@ -192,17 +192,20 @@ test('keeps an unlisted AMD Developer Cloud entitlement requestable', async () =
     fetchImpl,
   })
   const capacity = await orchestrator.checkCapacity({ refresh: true })
-  assert.equal(capacity.available, true)
+  assert.equal(capacity.available, false)
+  assert.equal(capacity.requestable, true)
   assert.equal(capacity.state, 'requestable')
   assert.equal(capacity.capacitySource, 'developer_cloud_entitlement')
-  assert.match(capacity.reason, /create request/i)
+  assert.match(capacity.reason, /not confirmed/i)
 })
 
 test('retries Developer Cloud capacity across size aliases and regions', async () => {
   const createRequests = []
   const fetchImpl = async (url, options = {}) => {
     if (url.includes('/droplets?')) return json({ droplets: [] })
-    if (url.includes('/sizes?')) return json({ sizes: [] })
+    if (url.includes('/sizes?')) {
+      return json({ sizes: [{ slug: 'gpu-mi300x1-192gb-devcloud', available: true, regions: ['atl1'] }] })
+    }
     if (url.includes('/account/keys')) return json({ ssh_keys: [{ name: 'rukter-key', fingerprint: 'aa:bb' }] })
     if (url.endsWith('/v2/droplets') && options.method === 'POST') {
       const payload = JSON.parse(options.body)

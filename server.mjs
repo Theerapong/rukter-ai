@@ -2262,8 +2262,12 @@ async function handleCreateStoryJob(req, res) {
     if (request.mode === 'amd_cinematic') {
       try {
         const capacity = await gpuLeaseOrchestrator.checkCapacity()
-        if (!capacity.available) {
-          sendJson(res, 409, { code: 'amd_capacity_unavailable', error: capacity.reason, capacity })
+        if (!capacity.available || capacity.state !== 'available') {
+          sendJson(res, 409, {
+            code: capacity.state === 'requestable' ? 'amd_capacity_unconfirmed' : 'amd_capacity_unavailable',
+            error: capacity.reason,
+            capacity,
+          })
           return
         }
       } catch (error) {

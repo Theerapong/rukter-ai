@@ -8,21 +8,28 @@ const experienceIds = ['editorial-monograph', 'botanical-cinema', 'object-galler
 
 const configResponse = await fetch(`${baseUrl}/api/config`, { signal: AbortSignal.timeout(5_000) })
 const config = await configResponse.json()
+const storySessionCookie = String(configResponse.headers.get('set-cookie') || '').split(';')[0]
 if (!configResponse.ok || JSON.stringify(config.experienceIds) !== JSON.stringify(experienceIds)) {
   throw new Error('Runtime config does not expose the four premium experience contracts.')
+}
+if (!storySessionCookie.startsWith('rk_ai_story_session=')) {
+  throw new Error('Runtime config did not establish an anonymous Product Story session.')
 }
 if (config.visualCriticThreshold !== 82) throw new Error('Visual critic threshold is not configured.')
 if (config.visualCriticRepairPasses !== 2 || config.criticRepairTokens?.length !== 6) {
   throw new Error('Two-pass visual critic repairs are not configured.')
 }
-if (!config.productStoryConfigured || config.gpuZeroIdlePolicy !== 'destroy_after_job') {
-  throw new Error('Product Story zero-idle runtime contract is not configured.')
+if (!config.productStoryConfigured || config.gpuZeroIdlePolicy !== 'disabled_for_persistent' || config.amdGpuAutoShutdown !== false) {
+  throw new Error('Product Story persistent no-auto-shutdown runtime contract is not configured.')
 }
 if (config.gpuQueuePolicy !== 'fifo' || config.gpuQueueConcurrency !== 1 || config.gpuQueueCapacity < 1) {
   throw new Error('Product Story FIFO GPU queue contract is not configured.')
 }
 if (config.gpuPersistentPolicy !== 'always_on_tagged_worker' || config.amdGpuAlwaysOn !== true || config.amdGpuPersistentTag !== 'rukter-product-story-persistent') {
   throw new Error('Always-on persistent AMD GPU contract is not configured.')
+}
+if (!config.storySessionReady || !config.storyApprovalRequiredForAmd) {
+  throw new Error('Product Story session ownership and AMD approval gate are not configured.')
 }
 if (config.storyLimits?.minImages !== 1 || config.storyLimits?.maxImages !== 8) {
   throw new Error('Product Story source image limits are incorrect.')
@@ -51,7 +58,7 @@ const demoDataUrl = `data:image/jpeg;base64,${demoImage.toString('base64')}`
 for (let index = 0; index < 3; index += 1) {
   const uploadResponse = await fetch(`${baseUrl}/api/product-image`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', cookie: storySessionCookie },
     body: JSON.stringify({ name: `story-source-${index + 1}.jpg`, type: 'image/jpeg', dataUrl: demoDataUrl }),
     signal: AbortSignal.timeout(5_000),
   })
@@ -62,7 +69,7 @@ for (let index = 0; index < 3; index += 1) {
 
 const storyResponse = await fetch(`${baseUrl}/api/story-jobs`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', cookie: storySessionCookie },
   body: JSON.stringify({
     mode: 'fast_story',
     aspect: '9:16',
@@ -78,7 +85,10 @@ if (storyResponse.status !== 202 || !storyJob.id) throw new Error(`Product Story
 const storyDeadline = Date.now() + 12_000
 while (!['ready', 'failed', 'cancelled'].includes(storyJob.status) && Date.now() < storyDeadline) {
   await new Promise((resolve) => setTimeout(resolve, 250))
-  const statusResponse = await fetch(`${baseUrl}/api/story-jobs/${encodeURIComponent(storyJob.id)}`, { signal: AbortSignal.timeout(5_000) })
+  const statusResponse = await fetch(`${baseUrl}/api/story-jobs/${encodeURIComponent(storyJob.id)}`, {
+    headers: { cookie: storySessionCookie },
+    signal: AbortSignal.timeout(5_000),
+  })
   storyJob = await statusResponse.json()
 }
 if (storyJob.status !== 'ready') throw new Error(`Fast Product Story did not complete: ${JSON.stringify(storyJob)}`)
@@ -97,7 +107,7 @@ if (storyJob.activity.find((step) => step.id === 'gpu_queue')?.status !== 'skipp
 
 const onePhotoStoryResponse = await fetch(`${baseUrl}/api/story-jobs`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', cookie: storySessionCookie },
   body: JSON.stringify({
     mode: 'fast_story',
     aspect: '9:16',
@@ -115,7 +125,10 @@ if (onePhotoStoryResponse.status !== 202 || !onePhotoStoryJob.id) {
 const onePhotoDeadline = Date.now() + 12_000
 while (!['ready', 'failed', 'cancelled'].includes(onePhotoStoryJob.status) && Date.now() < onePhotoDeadline) {
   await new Promise((resolve) => setTimeout(resolve, 250))
-  const statusResponse = await fetch(`${baseUrl}/api/story-jobs/${encodeURIComponent(onePhotoStoryJob.id)}`, { signal: AbortSignal.timeout(5_000) })
+  const statusResponse = await fetch(`${baseUrl}/api/story-jobs/${encodeURIComponent(onePhotoStoryJob.id)}`, {
+    headers: { cookie: storySessionCookie },
+    signal: AbortSignal.timeout(5_000),
+  })
   onePhotoStoryJob = await statusResponse.json()
 }
 if (onePhotoStoryJob.status !== 'ready') throw new Error(`One-photo Product Story did not complete: ${JSON.stringify(onePhotoStoryJob)}`)
@@ -125,7 +138,7 @@ if (onePhotoStoryJob.plan?.shots?.length !== 1 || onePhotoStoryJob.totalShots !=
 
 const unavailableCinematicResponse = await fetch(`${baseUrl}/api/story-jobs`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', cookie: storySessionCookie },
   body: JSON.stringify({ mode: 'amd_cinematic', aspect: '16:9', sourceImages: storySourceImages }),
   signal: AbortSignal.timeout(5_000),
 })

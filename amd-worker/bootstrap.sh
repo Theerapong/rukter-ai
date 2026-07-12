@@ -64,7 +64,7 @@ RestartSec=10
 TimeoutStartSec=20min
 EnvironmentFile=/etc/rukter-amd-worker.env
 ExecStartPre=-/usr/bin/docker rm -f rukter-amd-worker
-ExecStart=/usr/bin/docker run --rm --name rukter-amd-worker --network host --ipc host --device=/dev/kfd --device=/dev/dri --group-add video --security-opt seccomp=unconfined --env-file /etc/rukter-amd-worker.env -v /opt/rukter:/opt/rukter -v /var/lib/rukter-models:/root/.cache/huggingface -v /var/lib/rukter-outputs:/var/lib/rukter-outputs -w /opt/rukter ${ROCM_WORKER_IMAGE} bash -lc "apt-get update && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr && rm -rf /var/lib/apt/lists/* && python3 -m pip install --no-cache-dir -r requirements.txt && exec uvicorn app:app --host 0.0.0.0 --port 8080"
+ExecStart=/usr/bin/docker run --rm --name rukter-amd-worker --network host --ipc host --device=/dev/kfd --device=/dev/dri --group-add video --security-opt seccomp=unconfined --env-file /etc/rukter-amd-worker.env -v /opt/rukter:/opt/rukter -v /var/lib/rukter-models:/root/.cache/huggingface -v /var/lib/rukter-outputs:/var/lib/rukter-outputs -w /opt/rukter ${ROCM_WORKER_IMAGE} bash -lc "apt-get update && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr tesseract-ocr-tha && rm -rf /var/lib/apt/lists/* && python3 -m pip install --no-cache-dir -r requirements.txt && exec uvicorn app:app --host 0.0.0.0 --port 8080"
 ExecStop=-/usr/bin/docker stop -t 20 rukter-amd-worker
 
 [Install]

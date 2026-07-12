@@ -86,13 +86,29 @@ print(json.dumps({
   assert.equal(result.clipFallback, false)
 })
 
+test('keeps Thai packaging tokens as OCR identity evidence', { skip: skipReason }, () => {
+  const result = runIdentityGuard(`
+import json, sys
+sys.path.insert(0, 'amd-worker')
+from identity_guard import OcrToken
+print(json.dumps({'tokens': sorted(OcrToken('รักไทย 123', 0, 0, 10, 10).normalized)}, ensure_ascii=False))
+`)
+  assert.ok(result.tokens.includes('รักไทย'))
+  assert.ok(result.tokens.includes('123'))
+})
+
 test('ships the identity guard helper through every AMD worker bootstrap path', () => {
   const dockerfile = readFileSync(path.join(repoRoot, 'amd-worker', 'Dockerfile'), 'utf8')
   const bootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')
   const server = readFileSync(path.join(repoRoot, 'server.mjs'), 'utf8')
   assert.match(dockerfile, /identity_guard\.py/)
+  assert.match(dockerfile, /tesseract-ocr-tha/)
   assert.match(bootstrap, /identity_guard\.py/)
+  assert.match(bootstrap, /tesseract-ocr-tha/)
   assert.match(server, /identity_guard\.py/)
+  const identityGuard = readFileSync(path.join(repoRoot, 'amd-worker', 'identity_guard.py'), 'utf8')
+  assert.match(identityGuard, /OCR_LANGUAGES/)
+  assert.match(identityGuard, /\\u0E00-\\u0E7F/)
 })
 
 test('ships live GPU telemetry through every AMD worker bootstrap path', () => {
@@ -108,10 +124,15 @@ test('ships live GPU telemetry through every AMD worker bootstrap path', () => {
 
 test('worker uses requested story output dimensions and short render shots', () => {
   const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+  const app = readFileSync(path.join(repoRoot, 'amd-worker', 'app.py'), 'utf8')
   assert.match(pipeline, /output = story\.get\("output", \{\}\)/)
   assert.match(pipeline, /output\.get\("width"\)/)
   assert.match(pipeline, /output\.get\("height"\)/)
   assert.match(pipeline, /max\(2, min\(5/)
+  assert.match(pipeline, /STORY_INFERENCE_STEP_BUDGET_PER_PASS/)
+  assert.match(pipeline, /story_inference_steps\(total_shots\)/)
+  assert.match(app, /STORY_PIPELINE_TIMEOUT_SECONDS/)
+  assert.doesNotMatch(app, /timeout=18 \* 60/)
 })
 
 test('worker rejects human hands and body parts as product-story contamination', () => {
@@ -120,8 +141,10 @@ test('worker rejects human hands and body parts as product-story contamination',
   assert.match(pipeline, /HUMAN_CONTAMINATION_PROMPTS/)
   assert.match(pipeline, /human_contamination_evidence/)
   assert.match(pipeline, /humanContaminationDetected/)
-  assert.match(pipeline, /not contamination\["humanContaminationDetected"\]/)
-  assert.match(storySource, /Product-only commercial packshot/)
+  assert.match(pipeline, /FAILURE_CODE_HUMAN_CONTAMINATION/)
+  assert.match(pipeline, /detected = observed/)
+  assert.match(pipeline, /"humanPolicy": "background_only"/)
+  assert.match(storySource, /Product-centered commercial frame with no people/)
   assert.match(storySource, /no hands, no fingers, no arms, no body parts/)
 })
 
@@ -161,4 +184,126 @@ print(json.dumps(parse_rocm_smi_json(raw)))
   assert.equal(result.utilizationPct, 0)
   assert.equal(result.vramPct, 0)
   assert.equal(result.powerWatts, 0)
+})
+
+test('builds product-agnostic retries from identity locks and typed failure codes', () => {
+  const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+
+  assert.doesNotMatch(pipeline, /\b(?:luggage|wheels|handles|shell pattern)\b/i)
+  assert.match(pipeline, /normalized_identity_locks/)
+  assert.match(pipeline, /FAILURE_RETRY_INSTRUCTIONS/)
+  assert.match(pipeline, /clip_similarity_below_threshold/)
+  assert.match(pipeline, /ocr_retention_below_threshold/)
+  assert.match(pipeline, /human_product_occlusion/)
+  assert.match(pipeline, /"attemptHistory"/)
+  assert.match(pipeline, /"observedFailureCodes"/)
+})
+
+test('uses the current shot locks and local failure type when constructing a retry', () => {
+  const result = runWorkerScript(`
+import __future__, ast, json, re
+source = open('amd-worker/run_story_pipeline.py', encoding='utf-8').read()
+tree = ast.parse(source)
+names = {
+  'DEFAULT_IDENTITY_LOCKS', 'FAILURE_CODE_CLIP_SIMILARITY', 'FAILURE_CODE_OCR_RETENTION',
+  'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS',
+  'HUMAN_NEGATIVE_PATTERN', 'HUMAN_PROHIBITION_PATTERN', 'normalized_identity_locks',
+  'retry_directives', 'apply_people_policy', 'evenly_spaced_frame_indices',
+}
+selected = []
+for node in tree.body:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+        selected.append(node)
+    elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if any(isinstance(target, ast.Name) and target.id in names for target in targets):
+            selected.append(node)
+module = ast.Module(body=selected, type_ignores=[])
+namespace = {'re': re}
+exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
+locks = namespace['normalized_identity_locks']({'identityLocks': ['amber glass bottle', 'black dropper cap']})
+retry_prompt, retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], True)
+people_prompt, people_negative = namespace['apply_people_policy'](
+    'No people or body parts may occlude the product. A model holds the product beside their face.',
+    'person, human, warped logo',
+    True,
+)
+print(json.dumps({
+  'locks': locks,
+  'retryPrompt': retry_prompt,
+  'retryNegative': retry_negative,
+  'peoplePrompt': people_prompt,
+  'peopleNegative': people_negative,
+  'indices': namespace['evenly_spaced_frame_indices'](17, 5),
+}))
+`)
+
+  assert.deepEqual(result.locks, ['amber glass bottle', 'black dropper cap'])
+  assert.match(result.retryPrompt, /amber glass bottle/)
+  assert.match(result.retryPrompt, /packaging text/)
+  assert.doesNotMatch(result.retryNegative, /person|human|hand/i)
+  assert.doesNotMatch(result.peoplePrompt, /No people/i)
+  assert.match(result.peoplePrompt, /people are allowed/i)
+  assert.equal(result.peopleNegative, 'warped logo')
+  assert.deepEqual(result.indices, [0, 4, 8, 12, 16])
+})
+
+test('samples five frames, preserves the full source, and applies per-shot people policy', () => {
+  const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+
+  assert.match(pipeline, /evenly_spaced_frame_indices\(len\(frames\), 5\)/)
+  assert.match(pipeline, /ImageOps\.contain/)
+  assert.doesNotMatch(pipeline, /def resize_cover/)
+  assert.match(pipeline, /allow_people = shot\.get\("allowPeople"\) is True/)
+  assert.match(pipeline, /detected = observed/)
+  assert.match(pipeline, /HUMAN_PROHIBITION_PATTERN\.sub/)
+})
+
+test('restricts source downloads to the configured origin without redirects or oversized payloads', () => {
+  const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+
+  assert.match(pipeline, /RUKTER_SOURCE_ORIGIN/)
+  assert.match(pipeline, /configured_source_origin/)
+  assert.match(pipeline, /allow_redirects=False/)
+  assert.match(pipeline, /ALLOWED_SOURCE_MIME_TYPES/)
+  assert.match(pipeline, /SOURCE_MAX_BYTES/)
+  assert.match(pipeline, /SOURCE_MAX_PIXELS/)
+  assert.match(pipeline, /SOURCE_MAX_DIMENSION/)
+  assert.match(pipeline, /Image\.MAX_IMAGE_PIXELS/)
+})
+
+test('validates worker story payloads and fails closed when the worker token is absent', () => {
+  const app = readFileSync(path.join(repoRoot, 'amd-worker', 'app.py'), 'utf8')
+
+  assert.match(app, /class StoryShotRequest/)
+  assert.match(app, /class StoryPayloadRequest/)
+  assert.match(app, /Every shot sourceUrl must reference sourceImages/)
+  assert.match(app, /WORKER_TOKEN is required before this worker can accept jobs/)
+  assert.match(app, /authConfigured/)
+  assert.match(app, /PROCESS_DIAGNOSTIC_CHARS/)
+})
+
+test('filters progress chatter and reports the worker process exit signal', () => {
+  const result = runWorkerScript(`
+import __future__, ast, json, re, signal
+source = open('amd-worker/app.py', encoding='utf-8').read()
+tree = ast.parse(source)
+names = {'pipeline_exit_detail', 'pipeline_failure_details', 'concise_pipeline_failure'}
+selected = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
+module = ast.Module(body=selected, type_ignores=[])
+namespace = {'json': json, 're': re, 'signal': signal}
+exec(compile(ast.fix_missing_locations(module), 'amd-worker/app.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
+message = namespace['concise_pipeline_failure'](
+    'RUKTER_PROGRESS {"progress": 44}\\nlast useful stdout\\n',
+    'last useful stderr\\n',
+    -9,
+)
+print(json.dumps({'message': message}))
+`)
+
+  assert.doesNotMatch(result.message, /RUKTER_PROGRESS/)
+  assert.match(result.message, /last useful stdout/)
+  assert.match(result.message, /last useful stderr/)
+  assert.match(result.message, /SIGKILL/)
+  assert.match(result.message, /returncode=-9/)
 })

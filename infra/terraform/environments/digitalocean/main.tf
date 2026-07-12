@@ -14,7 +14,7 @@ locals {
     FIREWORKS_VISION_MODEL         = "accounts/fireworks/models/kimi-k2p6"
     FIREWORKS_REQUEST_TIMEOUT_MS   = "24000"
     FIREWORKS_TOTAL_TIMEOUT_MS     = "27000"
-    FIREWORKS_MAX_TOKENS           = "2048"
+    FIREWORKS_MAX_TOKENS           = "4096"
     RUKTER_AI_HOSTING_PLATFORM     = "digitalocean-app-platform"
     RUKTER_AI_PUBLIC_URL           = "https://rukter.ai"
     AMD_GPU_PUBLIC_ENABLED         = tostring(var.amd_gpu_public_enabled)

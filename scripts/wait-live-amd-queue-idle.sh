@@ -13,9 +13,12 @@ while true; do
   queued="$(printf '%s' "${payload}" | jq -r '.queuedJobs // 0')"
   ready="$(printf '%s' "${payload}" | jq -r '.readyJobs // 0')"
   preparing="$(printf '%s' "${payload}" | jq -r '.preparingJobs // 0')"
+  in_progress="$(printf '%s' "${payload}" | jq -r '.inProgressJobs // 0')"
+  planning="$(printf '%s' "${payload}" | jq -r '.planningJobs // 0')"
+  awaiting_approval="$(printf '%s' "${payload}" | jq -r '.awaitingApprovalJobs // 0')"
   checked_at="$(printf '%s' "${payload}" | jq -r '.checkedAt // "unknown"')"
-  echo "AMD queue snapshot at ${checked_at}: active=${active} queued=${queued} ready=${ready} preparing=${preparing}"
-  if [[ "${active}" != "true" && "${queued}" == "0" ]]; then
+  echo "AMD story snapshot at ${checked_at}: active=${active} queued=${queued} ready=${ready} preparing=${preparing} in_progress=${in_progress} planning=${planning} awaiting_approval=${awaiting_approval}"
+  if [[ "${active}" != "true" && "${queued}" == "0" && "${in_progress}" == "0" ]]; then
     echo "AMD Product Story queue is idle; deploy may continue."
     exit 0
   fi

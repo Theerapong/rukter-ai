@@ -6,7 +6,8 @@ import numpy as np
 from PIL import Image
 
 
-TOKEN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,}")
+TOKEN_PATTERN = re.compile(r"[^\W_][\w\u0E00-\u0E7F._-]{1,}", re.UNICODE)
+OCR_LANGUAGES = os.getenv("WAN_OCR_LANGUAGES", "eng+tha")
 OCR_CONFIDENCE_MIN = float(os.getenv("WAN_OCR_CONFIDENCE_MIN", "45"))
 PRODUCT_COMPONENT_MIN_AREA_RATIO = float(os.getenv("WAN_PRODUCT_COMPONENT_MIN_AREA_RATIO", "0.004"))
 PRODUCT_COMPONENT_MIN_BBOX_RATIO = float(os.getenv("WAN_PRODUCT_COMPONENT_MIN_BBOX_RATIO", "0.018"))
@@ -24,7 +25,7 @@ class OcrToken:
 
     @property
     def normalized(self) -> set[str]:
-        return {token.lower() for token in TOKEN_PATTERN.findall(self.text or "")}
+        return {token.casefold() for token in TOKEN_PATTERN.findall(self.text or "")}
 
 
 def _image_array(image: Image.Image) -> np.ndarray:
@@ -129,7 +130,10 @@ def product_foreground_mask(image: Image.Image) -> np.ndarray:
 def ocr_tokens_from_image(image: Image.Image) -> list[OcrToken]:
     import pytesseract
 
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    try:
+        data = pytesseract.image_to_data(image, lang=OCR_LANGUAGES, output_type=pytesseract.Output.DICT)
+    except pytesseract.TesseractError:
+        data = pytesseract.image_to_data(image, lang="eng", output_type=pytesseract.Output.DICT)
     tokens: list[OcrToken] = []
     for index, text in enumerate(data.get("text", [])):
         try:

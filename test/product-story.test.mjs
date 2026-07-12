@@ -24,13 +24,117 @@ const sources = Array.from({ length: 5 }, (_, index) => ({
 }))
 
 test('normalizes Product Story requests to portable source images', () => {
-  const request = normalizeStoryRequest({ mode: 'amd_cinematic', style: 'social_commerce', aspect: '16:9', durationSeconds: 30, renderResolution: 'detail', sourceImages: [...sources, ...sources] })
+  const request = normalizeStoryRequest({
+    mode: 'amd_cinematic',
+    style: 'social_commerce',
+    aspect: '16:9',
+    durationSeconds: 30,
+    renderResolution: 'detail',
+    direction: {
+      campaignGoal: 'Launch a new product',
+      scenePolicy: 'Clean studio with restrained atmosphere',
+      peoplePolicy: 'No people',
+    },
+    sourceImages: [...sources, ...sources],
+  })
   assert.equal(request.mode, 'amd_cinematic')
   assert.equal(request.style, 'social_commerce')
   assert.equal(request.aspect, '16:9')
   assert.equal(request.durationSeconds, 20)
   assert.equal(request.renderResolution, 'detail')
+  assert.equal(request.direction.campaignGoal, 'Launch a new product')
+  assert.equal(request.direction.scenePolicy, 'Clean studio with restrained atmosphere')
+  assert.equal(request.direction.peoplePolicy, 'No people')
   assert.equal(request.sourceImages.length, 8)
+})
+
+test('compiles Product DNA and Fireworks shot directives into product-specific prompts', () => {
+  const plan = buildProductStoryPlan({
+    request: {
+      mode: 'amd_cinematic',
+      style: 'luxury_editorial',
+      direction: {
+        campaignGoal: 'Reveal the formulation through visible packaging detail',
+        scenePolicy: 'Dark reflective studio',
+        peoplePolicy: 'No people',
+      },
+      sourceImages: sources.slice(0, 2),
+    },
+    kit: {
+      productAnalysis: {
+        productType: 'Serum bottle',
+        summary: 'An amber glass serum bottle with a black dropper cap.',
+        visibleDetails: ['Amber cylindrical bottle', 'Black dropper cap', 'White rectangular front label'],
+      },
+      productDNA: {
+        category: 'Serum bottle',
+        identitySummary: 'Amber glass bottle with a black dropper and white front label.',
+        identityLocks: ['Amber cylindrical glass body', 'Black ribbed dropper cap'],
+        materials: ['amber glass', 'black plastic'],
+        colors: ['amber', 'black', 'white'],
+        brandMarks: ['small centered leaf mark'],
+        visibleText: ['RUKTER SERUM'],
+        visualRisks: ['small front-label text may warp'],
+      },
+      videoDirection: {
+        concept: 'Light traces the unchanged bottle geometry.',
+        storyArc: 'Establish, inspect, reveal.',
+        pacing: 'Slow editorial pacing.',
+        scenePolicy: 'Dark reflective studio.',
+        shots: [{
+          purpose: 'Reveal the front label and dropper construction.',
+          sourceViewIndex: 2,
+          caption: 'Form, held in light',
+          camera: 'Slow five-degree orbit around the label side.',
+          lighting: 'Narrow amber rim light with a soft front fill.',
+          environment: 'Dark neutral studio with no props.',
+          action: 'Move the camera only; keep the bottle stationary.',
+          transition: 'Cut on a matching highlight.',
+          identityLocks: ['White rectangular front-label geometry'],
+          allowedChanges: ['camera position', 'studio lighting'],
+          forbiddenChanges: ['dropper shape', 'label text'],
+          allowPeople: true,
+        }],
+      },
+      hero: {},
+      brandAngle: {},
+    },
+  })
+
+  assert.equal(plan.schema, 'rukter.product_story.v2')
+  assert.equal(plan.shots[0].sourceId, sources[1].id)
+  assert.equal(plan.director.campaignGoal, 'Reveal the formulation through visible packaging detail')
+  assert.match(plan.shots[0].cinematicPrompt, /Amber cylindrical glass body/)
+  assert.match(plan.shots[0].cinematicPrompt, /Black dropper cap/)
+  assert.match(plan.shots[0].cinematicPrompt, /RUKTER SERUM/)
+  assert.match(plan.shots[0].cinematicPrompt, /small front-label text may warp/)
+  assert.match(plan.shots[0].cinematicPrompt, /Slow five-degree orbit around the label side/)
+  assert.match(plan.shots[0].negativePrompt, /changed label text/)
+  assert.doesNotMatch(plan.shots[0].negativePrompt, /luggage|wheels|handles|shell pattern/i)
+  assert.equal(plan.shots[0].allowPeople, false, 'an explicit no-people request must override the AI directive')
+
+  const contextualPlan = buildProductStoryPlan({
+    request: {
+      mode: 'amd_cinematic',
+      direction: {
+        campaignGoal: 'Show scale in a real setting',
+        scenePolicy: 'Context is allowed when the product remains unobstructed',
+        peoplePolicy: 'Non-occluding people are allowed',
+      },
+      sourceImages: [sources[0]],
+    },
+    kit: {
+      productAnalysis: { productType: 'Product', visibleDetails: ['Complete visible silhouette'] },
+      videoDirection: {
+        shots: [{ allowPeople: true }],
+      },
+      hero: {},
+      brandAngle: {},
+    },
+  })
+  assert.equal(contextualPlan.shots[0].allowPeople, true)
+  assert.match(contextualPlan.shots[0].cinematicPrompt, /People may appear only as non-occluding context/)
+  assert.doesNotMatch(contextualPlan.shots[0].negativePrompt, /(?:^|, )(?:person|human|hand|body part)(?:,|$)/)
 })
 
 test('falls back to a safe video style for unknown style ids', () => {
@@ -130,12 +234,67 @@ test('directs AMD Cinematic as verified multi-clip generation rather than browse
   assert.ok(plan.shots.every((shot) => shot.generation.task === 'text_guided_image_to_video'))
   assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'AMD ROCm'))
   assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Clear evidence-led sequencing')))
-  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Product-only commercial packshot')))
+  assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('Product-centered commercial frame with no people')))
   assert.ok(plan.shots.every((shot) => shot.cinematicPrompt.includes('no hands, no fingers, no arms, no body parts')))
   assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('hand')))
   assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('body part')))
-  assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('unrelated packaging')))
-  assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'reference_constrained_and_verified'))
+  assert.ok(plan.shots.every((shot) => shot.negativePrompt.includes('occluding prop')))
+  assert.ok(plan.shots.every((shot) => shot.productPixelPolicy === 'generative_reference_constrained_check_required'))
+  assert.equal(plan.identityGuard.generativeProductAlteration, true)
+  assert.equal(plan.identityGuard.packagingText, 'ocr_retention_check_required_if_detectable')
+})
+
+test('does not negatively prompt real pen, tool, utensil, or lifestyle products out of the scene', () => {
+  const plan = buildProductStoryPlan({
+    request: {
+      mode: 'amd_cinematic',
+      direction: {
+        campaignGoal: 'Show the writing instrument in use-context detail',
+        scenePolicy: 'Lifestyle context on a quiet writing desk',
+        peoplePolicy: 'No people or body parts may appear.',
+      },
+      sourceImages: [sources[0]],
+    },
+    kit: {
+      productAnalysis: { productType: 'Fountain pen', visibleDetails: ['Black barrel', 'Gold nib'] },
+      productDNA: {
+        category: 'Fountain pen',
+        identitySummary: 'Black fountain pen with a gold nib.',
+        identityLocks: ['Black barrel', 'Gold nib'],
+        components: ['cap', 'barrel', 'nib'],
+      },
+      videoDirection: {
+        concept: 'A precise writing ritual.',
+        shots: [{
+          environment: 'A quiet writing desk with paper kept behind the unobstructed pen.',
+          allowPeople: false,
+        }],
+      },
+    },
+  })
+  assert.match(plan.shots[0].cinematicPrompt, /quiet writing desk/i)
+  assert.match(plan.shots[0].cinematicPrompt, /following the approved scene and environment direction/i)
+  assert.doesNotMatch(plan.shots[0].negativePrompt, /\b(?:pen|tools?|utensils?|lifestyle scene|typography)\b/i)
+  assert.match(plan.shots[0].cinematicPrompt, /preserve every source-printed mark and character/i)
+})
+
+test('preserves non-Latin packaging text as identity evidence instead of transliterating it', () => {
+  const plan = buildProductStoryPlan({
+    request: { mode: 'amd_cinematic', sourceImages: [sources[0]] },
+    kit: {
+      productAnalysis: { productType: 'Tea package', visibleDetails: ['Front label'] },
+      productDNA: {
+        category: 'Tea package',
+        identitySummary: 'Green tea package with a centered Thai label.',
+        identityLocks: ['Exact front label text: รักไทย'],
+        visibleText: ['รักไทย'],
+      },
+    },
+  })
+  assert.match(plan.shots[0].cinematicPrompt, /รักไทย/u)
+  const serverSource = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+  assert.match(serverSource, /productDNA\.visibleText must reproduce the exact visible source characters/)
+  assert.match(serverSource, /unicodeIdentityFields/)
 })
 
 test('creates a nine-step observable activity contract with an explicit GPU queue', () => {
@@ -216,6 +375,8 @@ test('waits for the live AMD queue to become idle before production deploy', () 
   assert.match(waitScript, /api\/story-queue/)
   assert.match(waitScript, /activeJobPresent/)
   assert.match(waitScript, /queuedJobs/)
+  assert.match(waitScript, /inProgressJobs/)
+  assert.match(waitScript, /awaitingApprovalJobs/)
 })
 
 test('keeps the public AMD GPU path on an always-on persistent Droplet', () => {
@@ -225,6 +386,7 @@ test('keeps the public AMD GPU path on an always-on persistent Droplet', () => {
   const bootstrapSource = readFileSync(new URL('../scripts/bootstrap-persistent-amd.sh', import.meta.url), 'utf8')
   const terraformSource = readFileSync(new URL('../infra/terraform/environments/digitalocean/main.tf', import.meta.url), 'utf8')
   assert.match(serverSource, /AMD_GPU_ALWAYS_ON/)
+  assert.match(serverSource, /function storyGpuEnabled\(\)[\s\S]*?return amdGpuAlwaysOnEnabled/)
   assert.match(serverSource, /ensurePersistentLease/)
   assert.match(serverSource, /always_on_tagged_worker/)
   assert.match(appSource, /AMD GPU ready/)
@@ -273,15 +435,64 @@ test('builds a truthful Fireworks trace with observations and directed video pro
   assert.equal(trace.inferenceAttempts, 1)
   assert.deepEqual(trace.observations, ['Ribbed shell', 'Four spinner wheels'])
   assert.equal(trace.prompts.length, 5)
-  assert.match(trace.prompts[0].prompt, /exact product identity/)
+  assert.match(trace.prompts[0].prompt, /Observed identity details that must remain visibly unchanged: Ribbed shell; Four spinner wheels/)
   assert.equal(trace.generation.task, 'text_guided_image_to_video')
+})
+
+test('gates AMD rendering behind an owner session approval and trusted uploads', () => {
+  const serverSource = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+  assert.match(serverSource, /ensureStorySession\(req, res\)/)
+  assert.match(serverSource, /rk_ai_story_session/)
+  assert.match(serverSource, /ownerSessionId/)
+  assert.match(serverSource, /ownedStoryJob\(req, res/)
+  assert.match(serverSource, /storyUploadGuard\(ownerSessionId\)/)
+  assert.match(serverSource, /story_session_upload_rate_limit/)
+  assert.match(serverSource, /status = 'awaiting_approval'/)
+  assert.match(serverSource, /job\.requestedMode === 'amd_cinematic' && generated\.mode !== 'fireworks_inference'/)
+  assert.match(serverSource, /Fireworks Product DNA unavailable; AMD render was not started/)
+  assert.match(serverSource, /awaitingApprovalJobs/)
+  assert.match(serverSource, /planningJobs/)
+  assert.match(serverSource, /inProgressJobs/)
+  assert.match(serverSource, /Owner approval window expired/)
+  assert.match(serverSource, /\/api\\\/story-jobs\\\/\(\[\^\/\]\+\)\\\/approve/)
+  assert.match(serverSource, /amdStoryQueue\.reserve\(job\.id\)/)
+  assert.match(serverSource, /code: 'story_approval_stale'/)
+  assert.match(serverSource, /normalizeAmdFailureEvidence/)
+  assert.match(serverSource, /failureEvidence: job\.failureEvidence/)
+  assert.match(serverSource, /validateStorySourceAssets/)
+  assert.match(serverSource, /same-origin \/uploads assets/)
+  assert.match(serverSource, /productImage: primarySource/)
+  assert.doesNotMatch(serverSource, /\.\.\.suppliedProductImage/)
+  assert.match(serverSource, /function storyGlobalCreateGuard/)
+  assert.match(serverSource, /storyPlanningActiveMax/)
+  assert.match(serverSource, /function storyGlobalUploadGuard/)
+  assert.match(serverSource, /limitInputPixels: maxUploadPixels/)
+  assert.match(serverSource, /ensureUploadStorageCapacity/)
+  assert.match(serverSource, /writeUploadWithinQuota\(path\.join\(uploadDir, fileName\), video\)/)
+  assert.match(serverSource, /pruneStaleUploads/)
+  assert.match(serverSource, /metadata\.pageHeight/)
+  assert.match(serverSource, /allowPeople: \{ type: 'boolean' \}/)
+  assert.match(serverSource, /defaultFireworksMaxTokens = 4096/)
+  assert.match(serverSource, /gpuZeroIdlePolicy: amdGpuAlwaysOnEnabled \? 'disabled_for_persistent'/)
+  assert.match(serverSource, /amdGpuAutoShutdown: false/)
+  assert.match(serverSource, /The persistent AMD worker remains online and credits continue/)
+  assert.match(serverSource, /status: 'persistent_online'/)
+  assert.match(serverSource, /releasePolicy: 'retain_after_job'/)
+  assert.match(serverSource, /if \(!persistent && leaseId && orchestratorUrl\)/)
+  assert.doesNotMatch(serverSource, /Cancelling the active render and destroying its AMD GPU/)
+  const planningBlock = serverSource.slice(
+    serverSource.indexOf("job.status = 'awaiting_approval'"),
+    serverSource.indexOf('function approveStoryJob'),
+  )
+  assert.doesNotMatch(planningBlock, /amdStoryQueue\.(?:reserve|markReady)/)
+  assert.doesNotMatch(planningBlock, /GPU billing has not started/)
 })
 
 test('always releases an AMD GPU lease after worker failure', async () => {
   const requests = []
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url, method: options.method || 'GET' })
-    if (url.endsWith('/v1/leases')) return new Response(JSON.stringify({ id: 'lease-1', status: 'ready', workerUrl: 'https://worker.example', gpuDevice: 'AMD Instinct MI300X' }))
+    if (url.endsWith('/v1/leases')) return new Response(JSON.stringify({ id: 'lease-1', status: 'ready', workerUrl: 'https://worker.example', gpuDevice: 'AMD Instinct MI300X', releasePolicy: 'destroy_after_job' }))
     if (url.endsWith('/v1/story-jobs')) return new Response(JSON.stringify({ error: 'worker failed' }), { status: 500 })
     if (url.endsWith('/release')) return new Response(JSON.stringify({ status: 'released' }))
     return new Response('{}')
@@ -298,7 +509,9 @@ test('always releases an AMD GPU lease after worker failure', async () => {
 
 test('retains a persistent AMD GPU lease after worker failure', async () => {
   const events = []
-  const fetchImpl = async (url) => {
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET' })
     if (url.endsWith('/v1/leases')) {
       return new Response(JSON.stringify({
         id: '584070698',
@@ -329,6 +542,7 @@ test('retains a persistent AMD GPU lease after worker failure', async () => {
   }), /worker failed/)
   assert.ok(events.includes('lease_retained'))
   assert.ok(!events.includes('lease_released'))
+  assert.ok(!requests.some((request) => request.url.endsWith('/v1/leases/584070698/release')))
 })
 
 test('cancels the active persistent worker job before retaining the GPU', async () => {
@@ -368,6 +582,7 @@ test('cancels the active persistent worker job before retaining the GPU', async 
   }), /Cancelled by user/)
   assert.ok(requests.some((request) => request.url.endsWith('/v1/story-jobs/worker-job-persistent/cancel')))
   assert.ok(events.includes('lease_retained'))
+  assert.ok(!requests.some((request) => request.url.endsWith('/v1/leases/584070698/release')))
 })
 
 test('cancels an unfinished persistent worker job after a polling failure', async () => {
@@ -404,7 +619,54 @@ test('cancels an unfinished persistent worker job after a polling failure', asyn
     pollIntervalMs: 1,
   }), /worker status unavailable/)
   assert.ok(requests.some((request) => request.url.endsWith('/v1/story-jobs/worker-job-unfinished/cancel')))
-  assert.ok(requests.some((request) => request.url.endsWith('/v1/leases/584070698/release')))
+  assert.ok(!requests.some((request) => request.url.endsWith('/v1/leases/584070698/release')))
+})
+
+test('preserves typed worker failure evidence while retaining the persistent GPU', async () => {
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith('/v1/leases')) {
+      return new Response(JSON.stringify({
+        id: '584070698',
+        status: 'ready',
+        workerUrl: 'https://worker.example',
+        releasePolicy: 'retain_after_job',
+      }))
+    }
+    if (url.endsWith('/v1/story-jobs') && options.method === 'POST') {
+      return new Response(JSON.stringify({ jobId: 'worker-job-evidence' }))
+    }
+    if (url.endsWith('/v1/story-jobs/worker-job-evidence') && options.method !== 'POST') {
+      return new Response(JSON.stringify({
+        status: 'failed',
+        error: 'Product identity verification failed for shot 1.',
+        failureCodes: ['clip_similarity_below_threshold'],
+        attemptHistory: [{ attempt: 1, failureCodes: ['clip_similarity_below_threshold'] }],
+        evidence: {
+          identityVerified: false,
+          shot: 1,
+          failureCodes: ['clip_similarity_below_threshold'],
+          attemptHistory: [{ attempt: 1, clipSimilarityMin: 0.42 }],
+        },
+      }))
+    }
+    if (url.endsWith('/v1/story-jobs/worker-job-evidence/cancel')) {
+      return new Response(JSON.stringify({ status: 'cancelled' }))
+    }
+    return new Response('{}')
+  }
+  await assert.rejects(() => runAmdStoryJob({
+    orchestratorUrl: 'https://orchestrator.example',
+    story: {},
+    sourceImages: sources,
+    fetchImpl,
+    pollIntervalMs: 1,
+  }), (error) => {
+    assert.equal(error.code, 'amd_worker_story_failed')
+    assert.deepEqual(error.failureCodes, ['clip_similarity_below_threshold'])
+    assert.equal(error.evidence.shot, 1)
+    assert.equal(error.attemptHistory.length, 1)
+    return true
+  })
 })
 
 test('polls an asynchronous MI300X lease until the ROCm worker is ready', async () => {
@@ -420,6 +682,7 @@ test('polls an asynchronous MI300X lease until the ROCm worker is ready', async 
         workerUrl: 'https://worker.example',
         gpuDevice: 'AMD Instinct MI300X',
         rocmVersion: '7.2.4',
+        releasePolicy: 'destroy_after_job',
       }))
     }
     if (url.endsWith('/v1/story-jobs')) return new Response(JSON.stringify({ error: 'stop after readiness proof' }), { status: 500 })
@@ -443,7 +706,7 @@ test('polls an asynchronous MI300X lease until the ROCm worker is ready', async 
 test('reports a failed GPU destroy instead of claiming billing stopped', async () => {
   const events = []
   const fetchImpl = async (url) => {
-    if (url.endsWith('/v1/leases')) return new Response(JSON.stringify({ id: 'lease-2', status: 'ready', workerUrl: 'https://worker.example' }))
+    if (url.endsWith('/v1/leases')) return new Response(JSON.stringify({ id: 'lease-2', status: 'ready', workerUrl: 'https://worker.example', releasePolicy: 'destroy_after_job' }))
     if (url.endsWith('/v1/story-jobs')) return new Response(JSON.stringify({ jobId: 'worker-job-1' }))
     if (url.includes('/v1/story-jobs/worker-job-1')) {
       return new Response(JSON.stringify({ status: 'ready', videoUrl: 'https://cdn.example/story.mp4', evidence: { identityVerified: true } }))

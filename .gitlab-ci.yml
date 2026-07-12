@@ -44,7 +44,7 @@ node:smoke:
     - node --check server.mjs
     - node --check public/app.js
     - node --check scripts/smoke.mjs
-    - python3 -m py_compile amd-worker/app.py amd-worker/run_story_pipeline.py
+    - python3 -m py_compile amd-worker/app.py amd-worker/gpu_telemetry.py amd-worker/identity_guard.py amd-worker/run_story_pipeline.py
     - bash -n scripts/bootstrap-persistent-amd.sh scripts/wait-live-amd-queue-idle.sh amd-worker/bootstrap.sh amd-worker/run_story_pipeline.sh
     - unset FIREWORKS_API_KEY DIGITALOCEAN_TOKEN AMD_GPU_DIGITALOCEAN_TOKEN AMD_GPU_PUBLIC_ENABLED AMD_GPU_ORCHESTRATOR_URL
     - npm test

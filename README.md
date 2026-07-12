@@ -130,13 +130,15 @@ GitLab CI runs the submission gates:
 ## API Surface
 
 - `GET /health` - readiness check.
-- `GET /api/config` - runtime configuration visible to the UI.
+- `GET /api/config` - runtime configuration and anonymous HttpOnly Product Story session.
 - `GET /api/gpu-capacity?refresh=1` - AMD worker and capacity status.
 - `GET /api/story-queue` - FIFO queue snapshot.
-- `POST /api/story-jobs` - start an asynchronous Product Story job.
+- `POST /api/product-image` - validate and store a session-owned source image.
+- `POST /api/story-jobs` - run Fireworks Product DNA and directed-shot planning; AMD is not queued yet.
 - `GET /api/story-jobs/:id` - poll job progress, logs, GPU state, and output.
+- `POST /api/story-jobs/:id/approve` - approve the current plan and enter the AMD render queue.
 - `POST /api/story-jobs/:id/cancel` - cancel a waiting or active job.
-- `POST /api/story-jobs/:id/release-gpu` - release an active GPU lease.
+- `POST /api/story-jobs/:id/release-gpu` - legacy lifecycle endpoint; the persistent worker is retained and is never auto-shutdown.
 - `POST /api/launch-kit` - legacy launch-kit generation endpoint.
 - `POST /api/export` - export generated assets.
 
@@ -146,4 +148,4 @@ GitLab CI runs the submission gates:
 
 ## Security Boundary
 
-This public repository contains only the standalone `rukter.ai` app, deployment definitions, and AMD worker bootstrap files. Do not commit API keys, cloud tokens, SSH private keys, Terraform state, or `.env` files. Production credentials belong in protected GitLab CI/CD variables and runtime secrets.
+This public repository contains only the standalone `rukter.ai` app, deployment definitions, and AMD worker bootstrap files. Product Story jobs are owner-scoped to an anonymous HttpOnly session, source URLs must reference validated same-origin uploads, and session/network/global limits bound Fireworks planning, uploads, and active work. Uploaded images are decoded under byte/pixel/dimension limits and removed after the configured retention window. Do not commit API keys, cloud tokens, SSH private keys, Terraform state, or `.env` files. Production credentials belong in protected GitLab CI/CD variables and runtime secrets.

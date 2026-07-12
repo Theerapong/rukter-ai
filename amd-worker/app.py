@@ -9,9 +9,10 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from gpu_telemetry import collect_rocm_smi_metrics
 
@@ -33,37 +34,135 @@ def positive_env_int(name: str, default: int) -> int:
 
 
 MAX_JOB_HISTORY = positive_env_int("MAX_JOB_HISTORY", 100)
+PROCESS_DIAGNOSTIC_CHARS = positive_env_int("PROCESS_DIAGNOSTIC_CHARS", 64_000)
+PIPELINE_TIMEOUT_SECONDS = min(4 * 60 * 60, max(20 * 60, positive_env_int("STORY_PIPELINE_TIMEOUT_SECONDS", 110 * 60)))
 
 
-def concise_pipeline_failure(stdout: str, stderr: str) -> str:
+class PipelineExecutionError(RuntimeError):
+    def __init__(self, message: str, evidence: dict | None = None):
+        super().__init__(message)
+        self.evidence = evidence
+
+
+def pipeline_exit_detail(returncode: int | None) -> str:
+    if returncode is None:
+        return "AMD story pipeline ended without an exit code."
+    if returncode < 0:
+        try:
+            signal_name = signal.Signals(-returncode).name
+        except ValueError:
+            signal_name = f"SIG{-returncode}"
+        return f"AMD story pipeline was terminated by {signal_name} (returncode={returncode})."
+    return f"AMD story pipeline exited with returncode={returncode}."
+
+
+def pipeline_failure_details(stdout: str, stderr: str, returncode: int | None = None) -> tuple[str, dict | None]:
     text = "\n".join(value for value in (stderr, stdout) if value)
-    identity = re.search(r"RuntimeError: Product identity verification failed for shot (\d+): (\{.*\})", text)
+    identity = re.search(r"RuntimeError: Product identity verification failed for shot (\d+): (\{[^\n]*\})", text)
     if identity:
+        try:
+            evidence = json.loads(identity.group(2))
+        except json.JSONDecodeError:
+            evidence = None
         return (
             f"Product identity verification failed for shot {identity.group(1)}. "
             "The generated clip did not preserve the required product identity evidence. "
-            f"Evidence: {identity.group(2)[:420]}"
+            f"Failure codes: {', '.join(evidence.get('failureCodes', [])) if evidence else 'identity_unverified'}",
+            evidence,
         )
     runtime_errors = re.findall(r"RuntimeError: ([^\n]+)", text)
     if runtime_errors:
-        return runtime_errors[-1][:700]
+        return runtime_errors[-1][:700], None
     useful_lines = [
         line.strip()
         for line in text.splitlines()
-        if line.strip() and not line.startswith("Traceback ") and not line.startswith("  File ")
+        if line.strip()
+        and not line.startswith("RUKTER_PROGRESS ")
+        and not line.startswith("Traceback ")
+        and not line.startswith("  File ")
     ]
-    return "\n".join(useful_lines[-4:])[:700] or "AMD story pipeline exited without a diagnostic."
+    diagnostic = "\n".join(useful_lines[-4:])
+    exit_detail = pipeline_exit_detail(returncode)
+    return "\n".join(value for value in (diagnostic, exit_detail) if value)[:700], None
+
+
+def concise_pipeline_failure(stdout: str, stderr: str, returncode: int | None = None) -> str:
+    return pipeline_failure_details(stdout, stderr, returncode)[0]
+
+
+class SourceImageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(default="Product image", max_length=120)
+    label: str = Field(default="Product view", max_length=80)
+    type: str = Field(default="image/jpeg", pattern=r"^image/(?:avif|gif|jpeg|png|webp)$")
+    size: int = Field(default=0, ge=0, le=8 * 1024 * 1024)
+    url: HttpUrl
+
+
+class StoryShotRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1, max_length=80)
+    sourceUrl: HttpUrl
+    cinematicPrompt: str = Field(min_length=1, max_length=6000)
+    negativePrompt: str = Field(default="", max_length=6000)
+    identityLocks: list[str] = Field(default_factory=list, max_length=16)
+    allowPeople: bool = False
+    generation: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_identity_locks(self):
+        if any(not value.strip() or len(value.strip()) > 240 for value in self.identityLocks):
+            raise ValueError("identityLocks must contain non-empty strings up to 240 characters.")
+        return self
+
+
+class StoryOutputRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    width: int = Field(ge=256, le=1280)
+    height: int = Field(ge=256, le=1280)
+
+
+class StoryPayloadRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    schema: str = Field(default="rukter.product_story.v1", pattern=r"^rukter\.product_story\.v\d+$")
+    mode: Literal["amd_cinematic"] = "amd_cinematic"
+    aspect: Literal["9:16", "1:1", "16:9"] = "9:16"
+    durationSeconds: float = Field(default=8, ge=1, le=20)
+    shots: list[StoryShotRequest] = Field(min_length=1, max_length=8)
+    output: StoryOutputRequest
 
 
 class StoryRequest(BaseModel):
-    story: dict
-    sourceImages: list[dict] = Field(min_length=1, max_length=8)
+    model_config = ConfigDict(extra="forbid")
+
+    story: StoryPayloadRequest
+    sourceImages: list[SourceImageRequest] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_shot_sources(self):
+        source_urls = {str(source.url) for source in self.sourceImages}
+        missing = [shot.id for shot in self.story.shots if str(shot.sourceUrl) not in source_urls]
+        if missing:
+            raise ValueError(f"Every shot sourceUrl must reference sourceImages; invalid shots: {', '.join(missing)}")
+        return self
 
 
 def require_token(authorization: str | None) -> None:
-    expected = os.getenv("WORKER_TOKEN", "")
+    expected = os.getenv("WORKER_TOKEN", "").strip()
+    insecure_allowed = os.getenv("RUKTER_ALLOW_INSECURE_WORKER", "").strip().lower() == "true"
+    if not expected and not insecure_allowed:
+        raise HTTPException(status_code=503, detail="WORKER_TOKEN is required before this worker can accept jobs.")
     if expected and authorization != f"Bearer {expected}":
         raise HTTPException(status_code=401, detail="Invalid worker token.")
+
+
+def worker_auth_ready() -> bool:
+    return bool(os.getenv("WORKER_TOKEN", "").strip()) or os.getenv("RUKTER_ALLOW_INSECURE_WORKER", "").strip().lower() == "true"
 
 
 def rocm_evidence() -> dict:
@@ -116,7 +215,7 @@ async def collect_process_stream(stream, job: dict, parse_progress: bool = False
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
-    return "".join(chunks)[-4000:]
+    return "".join(chunks)[-PROCESS_DIAGNOSTIC_CHARS:]
 
 
 class StoryJobCancelled(Exception):
@@ -209,24 +308,24 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
             stderr_task = asyncio.create_task(collect_process_stream(process.stderr, job))
             timed_out = False
             try:
-                await asyncio.wait_for(process.wait(), timeout=18 * 60)
+                await asyncio.wait_for(process.wait(), timeout=PIPELINE_TIMEOUT_SECONDS)
             except TimeoutError:
                 timed_out = True
                 await terminate_process(process)
             stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
             raise_if_cancelled(job_id)
             if timed_out:
-                raise RuntimeError("AMD story pipeline exceeded its 18 minute execution limit.")
+                raise RuntimeError(f"AMD story pipeline exceeded its {PIPELINE_TIMEOUT_SECONDS // 60} minute execution limit.")
             if process.returncode != 0:
-                reason = concise_pipeline_failure(stdout, stderr)
-                raise RuntimeError(f"AMD story pipeline failed: {reason}")
+                reason, failure_evidence = pipeline_failure_details(stdout, stderr, process.returncode)
+                raise PipelineExecutionError(f"AMD story pipeline failed: {reason}", failure_evidence)
             if not output_path.exists():
                 raise RuntimeError("AMD story pipeline did not write output.json.")
             output = json.loads(output_path.read_text(encoding="utf-8"))
             if not output.get("videoUrl"):
                 raise RuntimeError("AMD story pipeline did not return a public videoUrl.")
             output_evidence = output.get("evidence", {})
-            expected_shots = len(request.story.get("shots", []))
+            expected_shots = len(request.story.shots)
             verified_shots = output_evidence.get("shots", [])
             identity = output_evidence.get("identityVerified") is True
             if not identity or expected_shots < 1:
@@ -257,12 +356,18 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
             if job_id in cancel_requested_jobs:
                 job.update(status="cancelled", progress=100, detail="AMD Product Story cancelled", stage="cancelled", error="")
             else:
+                failure_evidence = error.evidence if isinstance(error, PipelineExecutionError) else None
                 job.update(
                     status="failed",
                     progress=100,
                     detail="AMD Product Story failed",
                     error=str(error),
                     gpuTelemetry=collect_rocm_smi_metrics(),
+                    **({
+                        "evidence": failure_evidence,
+                        "failureCodes": failure_evidence.get("failureCodes", []),
+                        "attemptHistory": failure_evidence.get("attemptHistory", []),
+                    } if failure_evidence else {}),
                 )
     finally:
         await terminate_process(process)
@@ -278,11 +383,13 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
 @app.get("/health")
 def health() -> dict:
     evidence = rocm_evidence()
+    auth_ready = worker_auth_ready()
     return {
-        "status": "ok" if evidence["available"] else "not_ready",
+        "status": "ok" if evidence["available"] and auth_ready else "not_ready",
         "service": "rukter-amd-story-worker",
         "workerVersion": os.getenv("WORKER_VERSION", "unknown"),
-        "acceptingJobs": evidence["available"] and active_job_id is None,
+        "acceptingJobs": evidence["available"] and auth_ready and active_job_id is None,
+        "authConfigured": auth_ready,
         "gpuTelemetry": collect_rocm_smi_metrics(),
         **evidence,
     }

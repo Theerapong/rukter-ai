@@ -24,6 +24,9 @@ const computeNote = $('#computeNote')
 const aspect = $('#aspect')
 const durationSeconds = $('#durationSeconds')
 const renderResolution = $('#renderResolution')
+const campaignGoal = $('#campaignGoal')
+const scenePolicy = $('#scenePolicy')
+const peoplePolicy = $('#peoplePolicy')
 const brief = $('#brief')
 const storyStyleState = $('#storyStyleState')
 const activityList = $('#activityList')
@@ -39,6 +42,7 @@ const generatedVideo = $('#generatedVideo')
 const storyTitle = $('#storyTitle')
 const jobStatus = $('#jobStatus')
 const stageKicker = $('#stageKicker')
+const stageState = $('.stage-state')
 const playButton = $('#playButton')
 const playbackProgress = $('#playbackProgress')
 const playbackTime = $('#playbackTime')
@@ -55,8 +59,26 @@ const releasePolicyState = $('#releasePolicyState')
 const outputState = $('#outputState')
 const exportVideoButton = $('#exportVideoButton')
 const exportStoryboardButton = $('#exportStoryboardButton')
-const releaseGpuButton = $('#releaseGpuButton')
 const exportStatus = $('#exportStatus')
+const approvalReview = $('#approvalReview')
+const approvalDirectionFacts = $('#approvalDirectionFacts')
+const productDnaType = $('#productDnaType')
+const productDnaSummary = $('#productDnaSummary')
+const productDnaDetails = $('#productDnaDetails')
+const productDnaReview = $('#productDnaReview')
+const directedShotReview = $('#directedShotReview')
+const approvalAcknowledgement = $('#approvalAcknowledgement')
+const approveAmdButton = $('#approveAmdButton')
+const approvalStatus = $('#approvalStatus')
+const identityEvidence = $('#identityEvidence')
+const identityEvidenceState = $('#identityEvidenceState')
+const identityEvidenceSummary = $('#identityEvidenceSummary')
+const identityEvidenceShots = $('#identityEvidenceShots')
+const mobileJobBar = $('#mobileJobBar')
+const mobileJobStatus = $('#mobileJobStatus')
+const mobileQueueStatus = $('#mobileQueueStatus')
+const mobileBillingStatus = $('#mobileBillingStatus')
+const jobPanel = $('#jobPanel')
 const toast = $('#toast')
 
 const fallbackStoryLimits = Object.freeze({ minImages: 1, maxImages: 8 })
@@ -69,6 +91,27 @@ const renderResolutionOptions = {
   fast: { label: 'Fast', dimensions: { '9:16': [384, 672], '1:1': [384, 384], '16:9': [672, 384] } },
   standard: { label: 'Standard', dimensions: { '9:16': [544, 960], '1:1': [544, 544], '16:9': [960, 544] } },
   detail: { label: 'Detail', dimensions: { '9:16': [640, 1120], '1:1': [640, 640], '16:9': [1120, 640] } },
+}
+const directionCatalog = {
+  campaignGoal: {
+    product_launch: { label: 'Product launch', instruction: 'Launch the product with a clear hero reveal and memorable final product payoff.' },
+    conversion_ad: { label: 'Conversion ad', instruction: 'Drive purchase intent with a fast benefit-led hook and clear product payoff.' },
+    product_detail: { label: 'Product detail', instruction: 'Explain visible product design, materials, and functional details with evidence-led shots.' },
+    brand_story: { label: 'Brand story', instruction: 'Build a premium brand story around the product while keeping claims grounded in the supplied images and facts.' },
+    social_hook: { label: 'Social hook', instruction: 'Create an immediate social-commerce hook with quick readable beats and a strong final product frame.' },
+  },
+  scenePolicy: {
+    ai_recommend: { label: 'AI recommends', instruction: 'Choose a product-appropriate scene from the supplied visual evidence; do not invent unsupported use claims or props.' },
+    studio_packshot: { label: 'Studio packshot', instruction: 'Use a clean studio product scene with controlled light and no unrelated props.' },
+    lifestyle_context: { label: 'Lifestyle context', instruction: 'Use a relevant lifestyle context while keeping the exact product unobstructed and avoiding unsupported claims.' },
+    material_macro: { label: 'Material macro', instruction: 'Prioritize macro material and construction details visible in the source views.' },
+    use_case_demo: { label: 'Use-case demo', instruction: 'Demonstrate a visually supported use case without changing the product or inventing unseen functionality.' },
+  },
+  peoplePolicy: {
+    no_people: { label: 'No people', instruction: 'No people or body parts may appear.' },
+    allow_people_no_contact: { label: 'People, background only', instruction: 'People may appear only in the background and must not touch, overlap, hold, or occlude the product.' },
+    ai_recommend: { label: 'AI recommends', instruction: 'Choose whether people are appropriate from the product category; preserve product visibility and never invent unsafe use.' },
+  },
 }
 const gpuTelemetryHelpText = 'Instant ROCm worker sample from rocm-smi. AMD DevCloud Insights charts are averaged and display memory, compute, power, and temperature as separate graphs.'
 
@@ -83,6 +126,9 @@ let playbackOffset = 0
 let toastTimer = null
 let activeShotIndex = 0
 let queueSnapshot = null
+let submittedDirection = null
+let approvalJobId = ''
+let approvingJob = false
 const expandedActivitySteps = new Set()
 
 function showToast(message, duration = 4200) {
@@ -156,6 +202,22 @@ function selectedStyle() {
   return document.querySelector('input[name="storyStyle"]:checked')?.value || 'cinematic_film'
 }
 
+function selectedDirection() {
+  return {
+    campaignGoal: directionCatalog.campaignGoal[campaignGoal.value]?.instruction || campaignGoal.value,
+    scenePolicy: directionCatalog.scenePolicy[scenePolicy.value]?.instruction || scenePolicy.value,
+    peoplePolicy: directionCatalog.peoplePolicy[peoplePolicy.value]?.instruction || peoplePolicy.value,
+  }
+}
+
+function directionLabel(group, value) {
+  const options = directionCatalog[group] || {}
+  const direct = options[value]
+  if (direct) return direct.label
+  const match = Object.values(options).find((option) => option.instruction === value)
+  return match?.label || String(value || 'Not specified')
+}
+
 function updateRenderResolutionLabels() {
   for (const option of renderResolution.options) {
     const preset = renderResolutionOptions[option.value]
@@ -172,9 +234,7 @@ function updateGenerateAvailability() {
   generateButton.querySelector('span').textContent = cinematicUnavailable
     ? 'AMD Cinematic is offline'
     : selectedMode() === 'amd_cinematic'
-      ? ['available', 'requestable'].includes(config.amdGpuCapacityState)
-        ? 'Queue AMD Cinematic Story'
-        : 'Join AMD Render Queue'
+      ? 'Analyze & plan'
       : 'Direct Product Story'
 }
 
@@ -193,21 +253,21 @@ function renderCapacity(capacity = config) {
   config.amdGpuAvailabilityReason = reason
   config.amdGpuPublicEnabled = publicEnabled
   config.amdGpuPersistent = persistent
-  amdModeState.textContent = persistent ? 'Always-on' : canStart ? requestable ? 'On demand' : 'Available' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
+  amdModeState.textContent = persistent ? 'Always-on' : canStart ? 'Verify worker' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
   amdModeInput.disabled = !canQueue
   amdModeOption.classList.toggle('is-disabled', !canQueue)
   amdModeState.title = canStart
     ? persistent
       ? 'The always-on AMD GPU stays active and ready between Product Story jobs.'
-      : 'AMD GPU starts on demand and is destroyed after the job.'
+      : 'AMD capacity is reachable, but the persistent always-on worker must be verified before rendering.'
     : canQueue
-      ? 'The FIFO queue accepts the job and waits without GPU billing until capacity returns.'
+      ? 'The FIFO queue accepts an approved render when capacity is ready. The persistent worker remains online and credits continue.'
       : reason || 'AMD Cinematic is unavailable.'
-  capacityState.textContent = persistent ? 'Ready' : canStart ? requestable ? 'On demand' : 'Ready' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
+  capacityState.textContent = persistent ? 'Ready' : canStart ? 'Verify worker' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
   capacityButton.classList.toggle('is-ready', canStart || canQueue)
   computeBadge.classList.toggle('is-safe', canStart || canQueue)
   computeBadge.querySelector('span').textContent = canStart
-    ? persistent ? 'AMD GPU ready' : requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
+    ? persistent ? 'AMD GPU ready' : 'Verify AMD worker'
     : canQueue
       ? 'AMD FIFO queue ready'
     : available
@@ -218,14 +278,12 @@ function renderCapacity(capacity = config) {
   computeNote.textContent = canStart
     ? persistent
       ? 'The persistent MI300X is already online and remains running between jobs. AMD credits continue while the Droplet is active.'
-      : requestable
-      ? 'AMD Cinematic jobs enter one FIFO queue. Billing starts only when this job provisions the MI300X and stops when the Droplet is destroyed.'
-      : 'AMD Cinematic jobs render one at a time. Waiting jobs do not start GPU billing.'
+      : 'AMD Cinematic requires the persistent always-on MI300X. Verify the worker before approval; credits continue while it is online.'
     : canQueue
-      ? `${reason || 'AMD capacity is temporarily unavailable.'} The job can wait in FIFO order with no GPU billing.`
+      ? `${reason || 'AMD capacity is temporarily unavailable.'} The job can wait; the persistent worker remains online and credits continue.`
     : requestable
       ? `${reason} The owner safety switch is off.`
-      : reason || 'AMD Cinematic is unavailable. Checking capacity never starts GPU billing.'
+      : reason || 'AMD Cinematic is unavailable. Capacity checks do not start a render; persistent worker credits continue while online.'
   if (!canQueue && selectedMode() === 'amd_cinematic') document.querySelector('input[value="fast_story"]').checked = true
   updateGenerateAvailability()
 }
@@ -241,17 +299,13 @@ async function checkGpuCapacity() {
     renderCapacity(capacity)
     if (!response.ok) throw new Error(capacity.reason || 'AMD capacity check failed.')
     if ((capacity.available || capacity.requestable) && capacity.publicEnabled) {
-      amdModeInput.checked = true
-      updateGenerateAvailability()
       showToast(capacity.persistentLease
         ? 'Always-on AMD MI300X is active and ready for the next job.'
-        : capacity.requestable
-          ? 'AMD on-demand provisioning is ready. Starting the story will request one MI300X.'
-          : 'AMD capacity is ready. Start the story to create the GPU Droplet.', 5600)
+        : 'AMD capacity is reachable. Verify the persistent always-on worker before approving render.', 5600)
     } else if (capacity.state === 'available' && capacity.available) {
       showToast('AMD capacity exists, but the owner safety switch is off.', 5600)
     } else if (capacity.state === 'requestable' || capacity.requestable) {
-      showToast('AMD on-demand access exists, but the owner safety switch is off. No GPU billing has started.', 5600)
+      showToast('AMD capacity is reachable, but the persistent worker safety switch is off.', 5600)
     } else {
       showToast(capacity.reason || 'No AMD MI300X capacity is available right now.', 5600)
     }
@@ -267,6 +321,7 @@ function setView(view) {
   uploadView.hidden = view !== 'upload'
   studioView.hidden = view !== 'studio'
   newStoryButton.hidden = view !== 'studio'
+  mobileJobBar.hidden = view !== 'studio'
   document.body.dataset.view = view
 }
 
@@ -283,6 +338,10 @@ async function normalizeImage(file) {
   if (!supportedTypes.has(file.type)) throw new Error(`${file.name}: choose a JPG, PNG, WebP, AVIF, or GIF image.`)
   const bitmap = await createImageBitmap(file)
   const scale = Math.min(1, 1800 / Math.max(bitmap.width, bitmap.height))
+  if (scale === 1 && file.size <= maxImageBytes) {
+    bitmap.close()
+    return file
+  }
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(bitmap.width * scale))
   canvas.height = Math.max(1, Math.round(bitmap.height * scale))
@@ -291,16 +350,21 @@ async function normalizeImage(file) {
     bitmap.close()
     throw new Error('This browser could not prepare the product image.')
   }
-  context.fillStyle = '#ffffff'
-  context.fillRect(0, 0, canvas.width, canvas.height)
+  const canPreserveTransparency = file.type !== 'image/jpeg'
+  if (!canPreserveTransparency) {
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+  }
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
   bitmap.close()
+  const outputType = canPreserveTransparency ? 'image/webp' : 'image/jpeg'
   const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Could not prepare the image.')), 'image/jpeg', .88)
+    canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Could not prepare the image.')), outputType, .9)
   })
   if (blob.size > maxImageBytes) throw new Error(`${file.name}: the prepared image is over 4 MB.`)
-  return new File([blob], `${file.name.replace(/\.[^.]+$/, '') || 'product'}.jpg`, {
-    type: 'image/jpeg',
+  const extension = outputType === 'image/webp' ? 'webp' : 'jpg'
+  return new File([blob], `${file.name.replace(/\.[^.]+$/, '') || 'product'}.${extension}`, {
+    type: outputType,
     lastModified: file.lastModified,
   })
 }
@@ -393,7 +457,7 @@ function initialActivity() {
     ['motion_shots', 'Text-guided video generation'],
     ['identity_check', 'Product identity check'],
     ['video_composition', 'Video composition'],
-    ['release_gpu', 'Release GPU'],
+    ['release_gpu', 'Persistent worker status'],
   ].map(([id, label]) => ({ id, label, status: 'pending', detail: 'Waiting', progress: 0 }))
 }
 
@@ -423,6 +487,169 @@ function appendTraceList(container, label, items) {
     list.append(item)
   }
   container.append(heading, list)
+}
+
+function replaceTextList(list, values, emptyText = '') {
+  const safeValues = Array.isArray(values) ? values.filter(Boolean) : []
+  list.replaceChildren(...(safeValues.length ? safeValues : emptyText ? [emptyText] : []).map((value) => {
+    const item = document.createElement('li')
+    item.textContent = String(value)
+    return item
+  }))
+}
+
+function appendDefinitionFact(list, label, value) {
+  const row = document.createElement('div')
+  const term = document.createElement('dt')
+  const detail = document.createElement('dd')
+  term.textContent = label
+  detail.textContent = value
+  row.append(term, detail)
+  list.append(row)
+}
+
+function directionForJob(job) {
+  return job?.direction || job?.request?.direction || job?.creativeDirection || submittedDirection || selectedDirection()
+}
+
+function renderApprovalReview(job) {
+  const awaitingApproval = job?.status === 'awaiting_approval' && job?.requestedMode === 'amd_cinematic'
+  approvalReview.hidden = !awaitingApproval
+  activityList.classList.toggle('is-reviewing', awaitingApproval)
+  if (!awaitingApproval) return
+
+  if (approvalJobId !== job.id) {
+    approvalJobId = job.id
+    approvalAcknowledgement.checked = false
+    approvingJob = false
+  }
+
+  const direction = directionForJob(job)
+  approvalDirectionFacts.replaceChildren()
+  appendDefinitionFact(approvalDirectionFacts, 'Campaign', directionLabel('campaignGoal', direction.campaignGoal))
+  appendDefinitionFact(approvalDirectionFacts, 'Scene', directionLabel('scenePolicy', direction.scenePolicy))
+  appendDefinitionFact(approvalDirectionFacts, 'People', directionLabel('peoplePolicy', direction.peoplePolicy))
+  appendDefinitionFact(approvalDirectionFacts, 'Output', `${job.aspect || job.plan?.aspect || '9:16'} · ${job.durationSeconds || job.plan?.durationSeconds || 8} sec`)
+  if (job.videoDirection?.concept) appendDefinitionFact(approvalDirectionFacts, 'AI concept', job.videoDirection.concept)
+  if (job.videoDirection?.pacing) appendDefinitionFact(approvalDirectionFacts, 'Pacing', job.videoDirection.pacing)
+
+  const analysis = job.productAnalysis || job.aiDirection || {}
+  const dna = job.productDNA || analysis.productDNA || {}
+  const dnaDetails = [
+    ...(dna.identityLocks || []).map((value) => `Identity lock · ${value}`),
+    ...(dna.materials || []).map((value) => `Material · ${value}`),
+    ...(dna.colors || []).map((value) => `Color · ${value}`),
+    ...(dna.brandMarks || []).map((value) => `Brand mark · ${value}`),
+    ...(dna.visibleText || []).map((value) => `Visible text · ${value}`),
+    ...(dna.components || []).map((value) => `Component · ${value}`),
+  ].slice(0, 14)
+  const observedDetails = analysis.visibleDetails || analysis.observations || []
+  productDnaType.textContent = dna.category || analysis.productType || job.plan?.productName || 'Product identity requires review'
+  productDnaSummary.textContent = dna.identitySummary || analysis.summary || 'Confirm the visible product details and directed shots below.'
+  replaceTextList(productDnaDetails, dnaDetails.length ? dnaDetails : observedDetails, 'No visible details were reported; verify the source photos manually.')
+  const needsReview = [
+    ...(Array.isArray(analysis.needsReview) ? analysis.needsReview : []),
+    ...(Array.isArray(dna.visualRisks) ? dna.visualRisks.map((value) => `Visual risk · ${value}`) : []),
+  ].filter(Boolean)
+  productDnaReview.hidden = needsReview.length === 0
+  replaceTextList(productDnaReview.querySelector('ul'), needsReview)
+
+  const prompts = job.aiDirection?.prompts || []
+  directedShotReview.replaceChildren(...(job.plan?.shots || []).map((shot, index) => {
+    const item = document.createElement('li')
+    const image = document.createElement('img')
+    image.src = shot.sourceUrl
+    image.alt = `${shot.sourceLabel || `View ${index + 1}`} used for shot ${index + 1}`
+    const copy = document.createElement('div')
+    const heading = document.createElement('strong')
+    heading.textContent = `Shot ${index + 1} · ${shot.sourceLabel || `View ${index + 1}`}`
+    const caption = document.createElement('p')
+    caption.textContent = shot.caption || 'No caption'
+    const details = document.createElement('details')
+    const summary = document.createElement('summary')
+    summary.textContent = 'Review directed prompt'
+    const prompt = document.createElement('p')
+    prompt.textContent = shot.cinematicPrompt || prompts[index]?.prompt || 'No directed prompt was returned.'
+    details.append(summary, prompt)
+    copy.append(heading, caption, details)
+    item.append(image, copy)
+    return item
+  }))
+  if (!directedShotReview.children.length) {
+    const item = document.createElement('li')
+    item.className = 'is-empty'
+    item.textContent = 'Directed shots are not ready yet.'
+    directedShotReview.append(item)
+  }
+
+  approveAmdButton.disabled = approvingJob || !approvalAcknowledgement.checked
+  approveAmdButton.textContent = approvingJob ? 'Approving…' : 'Approve AMD render'
+  approvalStatus.textContent = 'No render has started; the persistent AMD worker remains online and credits continue.'
+}
+
+function numericEvidence(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(3) : '—'
+}
+
+function evidenceFailureCodes(shot) {
+  const failures = [shot?.failures, shot?.failureCodes, shot?.reasons, shot?.critic?.failures]
+    .flatMap((value) => Array.isArray(value) ? value : [])
+    .map((value) => typeof value === 'string' ? value : value?.code || value?.reason)
+    .filter(Boolean)
+  if (!failures.length && shot?.identityVerified !== true) {
+    if (Number(shot?.clipSimilarityMin) < Number(shot?.threshold)) failures.push('clip_similarity_below_threshold')
+    if (shot?.ocrRetentionRequired && Number(shot?.ocrRetentionMin) < Number(shot?.ocrRetentionThreshold)) failures.push('ocr_retention_below_threshold')
+    if (shot?.humanContaminationDetected) failures.push('human_product_occlusion')
+  }
+  return [...new Set(failures)]
+}
+
+function renderIdentityEvidence(job) {
+  const output = job?.output
+  const evidence = output?.evidence || job?.failureEvidence
+  identityEvidence.hidden = !output && !evidence
+  if (!output && !evidence) return
+
+  if (!evidence) {
+    identityEvidenceState.textContent = job.effectiveMode === 'amd_cinematic' ? 'Missing evidence' : 'Source preview'
+    identityEvidenceState.className = 'needs-review'
+    identityEvidenceSummary.textContent = job.effectiveMode === 'amd_cinematic'
+      ? 'No generated-frame identity evidence was returned. Seller review is required.'
+      : 'Motion Preview animates the uploaded source photos and does not run generated-frame similarity checks.'
+    identityEvidenceShots.replaceChildren()
+    return
+  }
+
+  const passed = evidence.identityVerified === true
+  identityEvidenceState.textContent = passed ? 'Checks passed' : 'Needs review'
+  identityEvidenceState.className = passed ? 'passed' : 'needs-review'
+  const failureCodes = evidenceFailureCodes(evidence)
+  identityEvidenceSummary.textContent = passed
+    ? `${evidence.method || 'Visual similarity and OCR retention checks'} Seller review is still required before use.`
+    : `${evidence.method || 'Generated-frame checks'} rejected this output${failureCodes.length ? `: ${failureCodes.join(', ')}` : '.'}`
+  const shots = Array.isArray(evidence.shots) ? evidence.shots : []
+  identityEvidenceShots.replaceChildren(...shots.map((shot, index) => {
+    const card = document.createElement('article')
+    card.className = shot.identityVerified === true ? 'is-passed' : 'is-failed'
+    const heading = document.createElement('div')
+    const title = document.createElement('strong')
+    const shotNumber = Number(String(shot.id || '').match(/\d+/)?.[0]) || Number(evidence.shot) || index + 1
+    title.textContent = `Shot ${shotNumber}`
+    const state = document.createElement('span')
+    state.textContent = shot.identityVerified === true ? 'Passed' : 'Review'
+    heading.append(title, state)
+    const facts = document.createElement('p')
+    facts.textContent = `Similarity ${numericEvidence(shot.clipSimilarityMin)} · OCR ${numericEvidence(shot.ocrRetentionMin)} · Attempt ${shot.attempt || 1}/${shot.maxAttempts || 1}`
+    card.append(heading, facts)
+    const failures = evidenceFailureCodes(shot)
+    if (failures.length) {
+      const list = document.createElement('ul')
+      replaceTextList(list, failures)
+      card.append(list)
+    }
+    return card
+  }))
 }
 
 function activityTrace(step, job) {
@@ -535,7 +762,7 @@ function renderActivity(activity = initialActivity(), job = null) {
     const head = document.createElement('div')
     head.className = 'activity-step-head'
     const title = document.createElement('strong')
-    title.textContent = step.label
+    title.textContent = step.id === 'release_gpu' ? 'Persistent worker status' : step.label
     head.append(title)
     if (isActive) {
       const status = document.createElement('span')
@@ -545,9 +772,12 @@ function renderActivity(activity = initialActivity(), job = null) {
     }
     const detail = document.createElement('p')
     detail.className = 'step-detail'
-    detail.textContent = isActive
-      ? `${step.detail} · ${progressText}`
+    const publicDetail = step.id === 'release_gpu' && job?.effectiveMode === 'amd_cinematic'
+      ? 'Persistent AMD worker stays online between jobs; credits continue.'
       : step.detail
+    detail.textContent = isActive
+      ? `${publicDetail} · ${progressText}`
+      : publicDetail
     const copy = document.createElement('div')
     copy.className = 'activity-step-copy'
     copy.append(head, detail)
@@ -639,10 +869,11 @@ function friendlyStatus(status) {
   return ({
     queued: 'Queued',
     analyzing: 'Understanding product',
+    awaiting_approval: 'Awaiting your approval',
     waiting_for_gpu: 'Waiting in AMD queue',
     gpu_starting: 'Starting AMD GPU',
     generating: 'Directing story',
-    cancelling: 'Releasing AMD GPU',
+    cancelling: 'Cancelling story',
     ready: 'Story ready',
     failed: 'Job failed',
     cancelled: 'Cancelled',
@@ -651,6 +882,7 @@ function friendlyStatus(status) {
 
 function friendlyQueue(queue) {
   if (!queue || queue.state === 'not_required') return 'Not required'
+  if (queue.state === 'awaiting_approval') return 'Awaiting approval'
   if (queue.state === 'complete') return 'Complete'
   if (queue.state === 'cancelled') return 'Cancelled'
   if (queue.state === 'failed') return 'Ended'
@@ -671,6 +903,7 @@ function friendlyGpuLoad(telemetry) {
 
 function queueStateDetail(value) {
   return ({
+    awaiting_approval: 'Product DNA ready; no render slot reserved',
     preparing: 'Reserved while story prompts are prepared',
     waiting: 'Waiting for the single AMD render slot',
     checking_capacity: 'First in queue, checking AMD capacity',
@@ -685,10 +918,10 @@ function queueStateDetail(value) {
 
 function billingDetail(job = currentJob) {
   const billing = job?.gpu?.billing || 'inactive'
-  if (billing === 'persistent_active' || job?.gpu?.releasePolicy === 'retain_after_job') return 'Persistent GPU online'
+  if (billing === 'persistent_active' || job?.gpu?.releasePolicy === 'retain_after_job' || (job?.effectiveMode === 'amd_cinematic' && (config.amdGpuPersistent || config.amdGpuAlwaysOn))) return 'Always-on worker credits continue'
   if (billing === 'active_for_job') return 'Active for this job'
-  if (billing === 'possibly_active') return 'Release required'
-  return 'Inactive'
+  if (billing === 'possibly_active') return 'Billing status uncertain'
+  return job?.effectiveMode === 'amd_cinematic' ? 'Always-on worker credits continue' : 'Not used'
 }
 
 function activeSlotDetail(job = currentJob, snapshot = queueSnapshot) {
@@ -832,46 +1065,69 @@ function renderJobNotice(job) {
   jobWarning.hidden = false
 }
 
+function jobUpdateIsStale(job) {
+  if (!currentJob || currentJob.id !== job?.id) return false
+  const currentUpdatedAt = new Date(currentJob.updatedAt || 0).getTime()
+  const incomingUpdatedAt = new Date(job.updatedAt || 0).getTime()
+  return Number.isFinite(currentUpdatedAt)
+    && Number.isFinite(incomingUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt
+}
+
 function renderJob(job) {
+  if (jobUpdateIsStale(job)) return false
   currentJob = job
   renderActivity(job.activity, job)
   jobId.textContent = job.id.replace('story_', '').slice(0, 10)
   jobId.title = job.id
   jobStatus.textContent = friendlyStatus(job.status)
+  stageState.classList.toggle('is-active', !terminalStates.has(job.status) && job.status !== 'awaiting_approval')
   storyTitle.textContent = job.plan?.title || 'Directing your product'
   stageKicker.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
   jobMode.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
   storyStyleState.textContent = job.plan?.styleLabel || 'Cinematic Product Film'
   queueState.textContent = friendlyQueue(job.queue)
   queueState.title = job.queue?.note || 'Show AMD queue details'
+  const awaitingApproval = job.status === 'awaiting_approval'
   const waitingForGpu = ['preparing', 'waiting', 'checking_capacity', 'capacity_wait'].includes(job.queue?.state)
+  const persistentPolicy = job.effectiveMode === 'amd_cinematic'
+    && (job.gpu?.releasePolicy === 'retain_after_job' || config.amdGpuPersistent || config.amdGpuAlwaysOn)
   workerState.textContent = job.effectiveMode === 'amd_cinematic'
-    ? waitingForGpu ? 'AMD FIFO queue' : (job.gpu?.device || 'AMD worker')
+    ? awaitingApproval ? 'Persistent AMD worker' : waitingForGpu ? 'AMD FIFO queue' : (job.gpu?.device || 'Persistent AMD worker')
     : 'Browser compositor'
-  gpuState.textContent = waitingForGpu ? 'Not started' : job.gpu?.status ? job.gpu.status.replaceAll('_', ' ') : 'Offline'
-  gpuLoadState.textContent = waitingForGpu || job.effectiveMode !== 'amd_cinematic'
+  const reportedGpuStatus = job.gpu?.status || ''
+  gpuState.textContent = awaitingApproval && persistentPolicy
+    ? 'Always-on · render not started'
+    : waitingForGpu && persistentPolicy
+      ? 'Always-on · render waiting'
+      : persistentPolicy && (!reportedGpuStatus || ['offline', 'released'].includes(reportedGpuStatus))
+        ? 'Always-on · render idle'
+        : waitingForGpu ? 'Render not started' : reportedGpuStatus ? reportedGpuStatus.replaceAll('_', ' ') : 'Offline'
+  gpuLoadState.textContent = awaitingApproval || waitingForGpu || job.effectiveMode !== 'amd_cinematic'
     ? 'No sample'
     : friendlyGpuLoad(job.gpu?.telemetry)
   gpuLoadState.title = job.gpu?.telemetry?.available ? gpuTelemetryHelpText : ''
   const gpuBillingActive = job.gpu?.billing === 'active_for_job'
-  const gpuBillingPersistent = job.gpu?.billing === 'persistent_active' || job.gpu?.releasePolicy === 'retain_after_job'
+  const gpuBillingPersistent = job.gpu?.billing === 'persistent_active' || persistentPolicy
   const gpuBillingUncertain = job.gpu?.billing === 'possibly_active'
-  billingState.textContent = gpuBillingPersistent ? 'Persistent' : gpuBillingActive ? 'Active for job' : gpuBillingUncertain ? 'Release required' : 'Inactive'
+  billingState.textContent = job.effectiveMode === 'amd_cinematic'
+    ? gpuBillingUncertain ? 'Check billing' : 'Always-on'
+    : 'Not used'
   billingState.classList.toggle('active', gpuBillingActive || gpuBillingPersistent || gpuBillingUncertain)
   billingState.classList.toggle('safe', !gpuBillingActive && !gpuBillingPersistent && !gpuBillingUncertain)
-  releasePolicyState.textContent = gpuBillingPersistent ? 'Keep online' : 'Destroy after job'
+  releasePolicyState.textContent = job.effectiveMode === 'amd_cinematic' ? 'Always-on' : 'Not used'
   outputState.textContent = job.output?.status === 'ready' ? `${job.output.width} × ${job.output.height}` : 'Waiting'
   computeBadge.classList.toggle('is-active', gpuBillingActive || gpuBillingPersistent || gpuBillingUncertain)
   computeBadge.classList.toggle('is-safe', waitingForGpu || gpuBillingPersistent || job.gpu?.status === 'released')
   computeBadge.querySelector('span').textContent = gpuBillingActive || gpuBillingPersistent || gpuBillingUncertain
-    ? gpuBillingUncertain ? 'Release GPU' : gpuBillingPersistent ? 'AMD GPU persistent' : 'AMD GPU active'
+    ? gpuBillingUncertain ? 'Check AMD billing' : gpuBillingPersistent ? 'AMD GPU persistent' : 'AMD GPU active'
     : waitingForGpu
       ? job.queue?.position ? `AMD queue #${job.queue.position}` : 'AMD queue next'
-    : job.gpu?.status === 'released' ? 'AMD GPU released' : 'AMD GPU offline'
+    : job.gpu?.status === 'released' ? 'AMD worker offline' : 'AMD GPU offline'
   if (!queuePopover.hidden) renderQueueDetails()
   renderJobNotice(job)
-  releaseGpuButton.disabled = gpuBillingPersistent || (!gpuBillingActive && !gpuBillingUncertain && !['ready', 'releasing'].includes(job.gpu?.status))
-  releaseGpuButton.textContent = gpuBillingPersistent ? 'Persistent GPU stays online' : 'Release GPU now'
+  renderApprovalReview(job)
+  renderIdentityEvidence(job)
   cancelJobButton.disabled = terminalStates.has(job.status)
   const ready = job.status === 'ready' && Boolean(job.plan)
   exportVideoButton.disabled = !ready
@@ -892,22 +1148,33 @@ function renderJob(job) {
       storyImage.hidden = false
     }
   }
-  if (gpuBillingPersistent && !ready) {
+  mobileJobStatus.textContent = friendlyStatus(job.status)
+  mobileQueueStatus.textContent = friendlyQueue(job.queue)
+  mobileBillingStatus.textContent = gpuBillingPersistent || job.effectiveMode === 'amd_cinematic'
+    ? 'Always-on GPU · credits continue'
+    : 'GPU not used'
+  mobileJobBar.classList.toggle('is-active', gpuBillingActive || gpuBillingPersistent)
+
+  if (job.status === 'awaiting_approval') {
+    exportStatus.textContent = 'Review Product DNA and directed shots. AMD rendering starts only after approval; the always-on worker remains billed.'
+  } else if (gpuBillingPersistent && !ready) {
     exportStatus.textContent = waitingForGpu
       ? 'The persistent MI300X remains online while this job waits. AMD credits continue.'
       : terminalStates.has(job.status)
         ? 'This job ended. The persistent MI300X remains online for testing; AMD credits continue.'
         : 'The persistent MI300X is rendering this job and will remain online afterward. AMD credits continue.'
   } else if (waitingForGpu) {
-    exportStatus.textContent = job.queue?.note || 'Waiting in FIFO order. GPU billing has not started.'
+    exportStatus.textContent = 'Waiting in FIFO order. The persistent AMD worker remains online and credits continue.'
   } else if (gpuBillingActive && !ready) {
-    exportStatus.textContent = 'The AMD GPU is rendering this job. Per-job billing is active until the lease is released.'
+    exportStatus.textContent = 'The persistent AMD GPU is rendering this job and remains online afterward. Credits continue.'
   }
   if (ready) exportStatus.textContent = job.output?.videoUrl
     ? gpuBillingPersistent
       ? 'AMD video output is ready. The persistent MI300X remains online for the next job.'
-      : 'AMD video output is ready. The GPU lease has been released.'
+      : 'AMD video output is ready. Verify the always-on worker billing status in AMD runtime details.'
     : 'Interactive preview is ready. Export renders the exact source photos in your browser.'
+  if (terminalStates.has(job.status)) clearInterval(elapsedTimer)
+  return true
 }
 
 async function pollJob(id) {
@@ -915,13 +1182,24 @@ async function pollJob(id) {
   try {
     const response = await fetch(`/api/story-jobs/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(10_000) })
     const job = await response.json()
-    if (!response.ok) throw new Error(job.error || 'Could not read Product Story status.')
-    renderJob(job)
-    if (!terminalStates.has(job.status)) pollTimer = setTimeout(() => pollJob(id), 650)
-    else if (job.status === 'ready') showToast('Product Story ready')
-    else if (job.status === 'failed') showToast(job.error || 'Product Story failed.')
+    if (!response.ok) {
+      const error = new Error(job.error || 'Could not read Product Story status.')
+      error.status = response.status
+      throw error
+    }
+    const rendered = renderJob(job)
+    const activeJob = rendered ? job : currentJob
+    if (!terminalStates.has(activeJob.status)) {
+      const delay = activeJob.status === 'awaiting_approval' ? 5_000 : 650
+      pollTimer = setTimeout(() => pollJob(id), delay)
+    } else if (activeJob.status === 'ready') showToast('Product Story ready')
+    else if (activeJob.status === 'failed') showToast(activeJob.error || 'Product Story failed.')
   } catch (error) {
     showToast(error instanceof Error ? error.message : String(error))
+    if ([401, 403, 404].includes(error?.status)) {
+      history.replaceState(null, '', location.pathname)
+      return
+    }
     pollTimer = setTimeout(() => pollJob(id), 1800)
   }
 }
@@ -936,6 +1214,7 @@ async function createStory() {
       generateButton.querySelector('span').textContent = `Uploading ${index + 1} of ${sources.length}…`
       uploaded.push(await uploadSource(sources[index]))
     }
+    submittedDirection = selectedDirection()
     const payload = {
       mode: selectedMode(),
       style: selectedStyle(),
@@ -944,7 +1223,8 @@ async function createStory() {
       renderResolution: renderResolution.value,
       brief: brief.value,
       channel: 'DTC',
-      productImage: { ...uploaded[0], dataUrl: sources[0].dataUrl },
+      direction: submittedDirection,
+      productImage: uploaded[0],
       sourceImages: uploaded,
     }
     const response = await fetch('/api/story-jobs', {
@@ -971,6 +1251,38 @@ async function createStory() {
     showToast(error instanceof Error ? error.message : String(error), 5200)
   } finally {
     updateGenerateAvailability()
+  }
+}
+
+async function approveAmdRender() {
+  if (!currentJob || currentJob.status !== 'awaiting_approval' || !approvalAcknowledgement.checked || approvingJob) return
+  approvingJob = true
+  approveAmdButton.disabled = true
+  approveAmdButton.textContent = 'Approving…'
+  approvalStatus.textContent = 'Submitting your reviewed direction. The persistent AMD worker remains online and credits continue.'
+  try {
+    const response = await fetch(`/api/story-jobs/${encodeURIComponent(currentJob.id)}/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true, expectedUpdatedAt: currentJob.updatedAt }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    const payload = await response.json().catch(() => null)
+    const job = payload?.job || payload
+    if (!response.ok || !job?.id) throw new Error(payload?.error || 'Could not approve AMD rendering.')
+    approvalStatus.textContent = 'Direction approved. Waiting for the AMD render slot.'
+    renderJob(job)
+    pollJob(job.id)
+    showToast('AMD render approved')
+  } catch (error) {
+    approvalStatus.textContent = error instanceof Error ? error.message : String(error)
+    showToast(approvalStatus.textContent, 5200)
+  } finally {
+    approvingJob = false
+    if (currentJob?.status === 'awaiting_approval') {
+      approveAmdButton.disabled = !approvalAcknowledgement.checked
+      approveAmdButton.textContent = 'Approve AMD render'
+    }
   }
 }
 
@@ -1031,12 +1343,17 @@ function pauseStory() {
   generatedVideo.pause()
 }
 
-function resetStory() {
+function resetStoryUi() {
   clearTimeout(pollTimer)
   clearInterval(elapsedTimer)
   pauseStory()
   currentJob = null
   queueSnapshot = null
+  submittedDirection = null
+  approvalJobId = ''
+  approvalAcknowledgement.checked = false
+  approvalReview.hidden = true
+  identityEvidence.hidden = true
   setQueuePopoverOpen(false)
   history.replaceState(null, '', location.pathname)
   playbackOffset = 0
@@ -1047,6 +1364,35 @@ function resetStory() {
   renderCapacity(config)
   setView('upload')
   window.scrollTo(0, 0)
+}
+
+async function requestJobCancellation(job) {
+  const response = await fetch(`/api/story-jobs/${encodeURIComponent(job.id)}/cancel`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(15_000),
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(payload?.error || 'Could not cancel the job.')
+  return payload?.job || payload
+}
+
+async function resetStory() {
+  if (currentJob && !terminalStates.has(currentJob.status)) {
+    const confirmed = window.confirm('This Product Story is still active. Cancel this job before starting a new story? The persistent AMD worker stays online and credits continue.')
+    if (!confirmed) return
+    newStoryButton.disabled = true
+    try {
+      const job = await requestJobCancellation(currentJob)
+      if (job?.id) renderJob(job)
+      showToast('Product Story cancelled. The persistent AMD worker remains online.')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), 5200)
+      return
+    } finally {
+      newStoryButton.disabled = false
+    }
+  }
+  resetStoryUi()
 }
 
 function downloadBlob(blob, name) {
@@ -1190,30 +1536,13 @@ function shotForPlanTime(plan, seconds) {
 async function cancelJob() {
   if (!currentJob || terminalStates.has(currentJob.status)) return
   cancelJobButton.disabled = true
-  const response = await fetch(`/api/story-jobs/${encodeURIComponent(currentJob.id)}/cancel`, { method: 'POST' })
-  const job = await response.json()
-  if (!response.ok) showToast(job.error || 'Could not cancel the job.')
-  else renderJob(job)
-}
-
-async function releaseGpu() {
-  if (!currentJob) return
-  releaseGpuButton.disabled = true
-  releaseGpuButton.textContent = 'Releasing…'
   try {
-    const response = await fetch(`/api/story-jobs/${encodeURIComponent(currentJob.id)}/release-gpu`, { method: 'POST' })
-    const job = await response.json()
-    if (!response.ok) throw new Error(job.error || 'Could not release AMD GPU.')
-    renderJob(job)
-    showToast(job.gpu?.releasePolicy === 'retain_after_job'
-      ? 'Persistent AMD GPU retained online'
-      : 'AMD GPU released; billing stopped')
+    const job = await requestJobCancellation(currentJob)
+    if (job?.id) renderJob(job)
+    showToast('Product Story cancelled. The persistent AMD worker remains online and credits continue.')
   } catch (error) {
-    showToast(error instanceof Error ? error.message : String(error))
-  } finally {
-    releaseGpuButton.textContent = currentJob?.gpu?.releasePolicy === 'retain_after_job'
-      ? 'Persistent GPU stays online'
-      : 'Release GPU now'
+    cancelJobButton.disabled = false
+    showToast(error instanceof Error ? error.message : String(error), 5200)
   }
 }
 
@@ -1280,8 +1609,12 @@ document.addEventListener('keydown', (event) => {
 document.querySelectorAll('input[name="storyMode"]').forEach((input) => input.addEventListener('change', updateGenerateAvailability))
 aspect.addEventListener('change', updateRenderResolutionLabels)
 newStoryButton.addEventListener('click', resetStory)
+approvalAcknowledgement.addEventListener('change', () => {
+  approveAmdButton.disabled = approvingJob || !approvalAcknowledgement.checked
+})
+approveAmdButton.addEventListener('click', approveAmdRender)
+mobileJobBar.addEventListener('click', () => jobPanel.scrollIntoView({ behavior: 'smooth', block: 'start' }))
 cancelJobButton.addEventListener('click', cancelJob)
-releaseGpuButton.addEventListener('click', releaseGpu)
 exportStoryboardButton.addEventListener('click', exportStoryboard)
 exportVideoButton.addEventListener('click', () => exportBrowserVideo().catch((error) => {
   exportVideoButton.disabled = false

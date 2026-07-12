@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,10 +35,40 @@ const uploadDir = path.join(__dirname, '.runtime', 'uploads')
 const port = Number(process.env.PORT || 3017)
 const storyJobs = new Map()
 const storyJobTtlMs = 60 * 60 * 1000
+const storyApprovalTtlMs = Math.max(60_000, Math.min(60 * 60_000, Number(process.env.AMD_STORY_APPROVAL_TTL_MS) || 15 * 60_000))
+const storySessionCookieName = 'rk_ai_story_session'
+const storySessionCookieMaxAge = 60 * 60 * 24
+const storySessionCreateWindowMs = 60 * 1000
+const storySessionCreateMax = 4
+const storySessionActiveMax = 2
+const storySessionCreateHistory = new Map()
+const storyClientCreateMax = 8
+const storyGlobalCreateMax = 24
+const storyGlobalActiveMax = 12
+const storyPlanningActiveMax = 4
+const storyClientCreateHistory = new Map()
+const storyGlobalCreateHistory = []
+const storySessionUploadWindowMs = 60 * 1000
+const storySessionUploadMax = 16
+const storySessionUploadHistory = new Map()
+const storyClientUploadMax = 32
+const storyGlobalUploadMax = 96
+const storyClientUploadHistory = new Map()
+const storyGlobalUploadHistory = []
+const storyClientUploadAttemptMax = 64
+const storyGlobalUploadAttemptMax = 512
+const storyClientUploadAttemptHistory = new Map()
+const storyGlobalUploadAttemptHistory = []
 const amdStoryQueueMaxSize = Math.max(1, Math.min(100, Number(process.env.AMD_GPU_QUEUE_MAX_SIZE) || 25))
 const amdCapacityPollMs = Math.max(5_000, Math.min(120_000, Number(process.env.AMD_GPU_CAPACITY_POLL_MS) || 30_000))
 const maxBodyBytes = 6_000_000
 const maxUploadBytes = 4_000_000
+const maxUploadPixels = 32_000_000
+const maxUploadDimension = 12_000
+const uploadRetentionMs = Math.max(60 * 60_000, Number(process.env.RUKTER_UPLOAD_RETENTION_MS) || 24 * 60 * 60_000)
+const uploadStorageMaxBytes = Math.max(100_000_000, Number(process.env.RUKTER_UPLOAD_STORAGE_MAX_BYTES) || 750_000_000)
+const uploadStorageMaxFiles = Math.max(100, Number(process.env.RUKTER_UPLOAD_STORAGE_MAX_FILES) || 2_500)
+let uploadStorageMutation = Promise.resolve()
 const maxVideoUploadBytes = 50_000_000
 const maxProductAssets = 4
 const experienceCatalog = Object.freeze({
@@ -70,7 +100,7 @@ const defaultFireworksFallbackModels = ['accounts/fireworks/models/gpt-oss-20b']
 const defaultFireworksVisionModel = 'accounts/fireworks/models/kimi-k2p6'
 const defaultFireworksRequestTimeoutMs = 24_000
 const defaultFireworksTotalTimeoutMs = 27_000
-const defaultFireworksMaxTokens = 2048
+const defaultFireworksMaxTokens = 4096
 const hackathonResponseBudgetMs = 30_000
 const amdGpuPublicUrl = process.env.RUKTER_AI_PUBLIC_URL || 'https://rukter.ai'
 const amdGpuAlwaysOnEnabled = String(process.env.AMD_GPU_ALWAYS_ON ?? 'true').toLowerCase() !== 'false'
@@ -109,7 +139,7 @@ const launchKitResponseFormat = {
     name: 'RukterLaunchKit',
     schema: {
       type: 'object',
-      required: ['productAnalysis', 'productDetections', 'creativeDirection', 'brandAngle', 'hero', 'storefrontLayout', 'mediaPlan', 'seo', 'socialCaptions', 'dashboardReview'],
+      required: ['productAnalysis', 'productDNA', 'videoDirection', 'productDetections', 'creativeDirection', 'brandAngle', 'hero', 'storefrontLayout', 'mediaPlan', 'seo', 'socialCaptions', 'dashboardReview'],
       properties: {
         productAnalysis: {
           type: 'object',
@@ -120,6 +150,55 @@ const launchKitResponseFormat = {
             visibleDetails: { type: 'array', items: { type: 'string' } },
             confidence: { type: 'string' },
             needsReview: { type: 'array', items: { type: 'string' } },
+          },
+        },
+        productDNA: {
+          type: 'object',
+          required: ['category', 'identitySummary', 'identityLocks', 'materials', 'colors', 'brandMarks', 'visibleText', 'components', 'visualRisks', 'motionAffordances'],
+          properties: {
+            category: { type: 'string' },
+            identitySummary: { type: 'string' },
+            identityLocks: { type: 'array', maxItems: 8, items: { type: 'string' } },
+            materials: { type: 'array', maxItems: 6, items: { type: 'string' } },
+            colors: { type: 'array', maxItems: 6, items: { type: 'string' } },
+            brandMarks: { type: 'array', maxItems: 6, items: { type: 'string' } },
+            visibleText: { type: 'array', maxItems: 6, items: { type: 'string' } },
+            components: { type: 'array', maxItems: 8, items: { type: 'string' } },
+            visualRisks: { type: 'array', maxItems: 6, items: { type: 'string' } },
+            motionAffordances: { type: 'array', maxItems: 6, items: { type: 'string' } },
+          },
+        },
+        videoDirection: {
+          type: 'object',
+          required: ['concept', 'storyArc', 'pacing', 'scenePolicy', 'shots'],
+          properties: {
+            concept: { type: 'string' },
+            storyArc: { type: 'string' },
+            pacing: { type: 'string' },
+            scenePolicy: { type: 'string' },
+            shots: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 5,
+              items: {
+                type: 'object',
+                required: ['purpose', 'sourceViewIndex', 'caption', 'camera', 'lighting', 'environment', 'action', 'transition', 'identityLocks', 'allowedChanges', 'forbiddenChanges', 'allowPeople'],
+                properties: {
+                  purpose: { type: 'string' },
+                  sourceViewIndex: { type: 'integer', minimum: 1, maximum: 8 },
+                  caption: { type: 'string' },
+                  camera: { type: 'string' },
+                  lighting: { type: 'string' },
+                  environment: { type: 'string' },
+                  action: { type: 'string' },
+                  transition: { type: 'string' },
+                  identityLocks: { type: 'array', maxItems: 6, items: { type: 'string' } },
+                  allowedChanges: { type: 'array', maxItems: 6, items: { type: 'string' } },
+                  forbiddenChanges: { type: 'array', maxItems: 8, items: { type: 'string' } },
+                  allowPeople: { type: 'boolean' },
+                },
+              },
+            },
           },
         },
         productDetections: {
@@ -343,6 +422,194 @@ function publicOrigin(req) {
   return `${protocol}://${host}`
 }
 
+function isLoopbackRequest(req) {
+  const host = String(req.headers.host || '').toLowerCase()
+  const remote = String(req.socket?.remoteAddress || '')
+  return /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host)
+    && (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1')
+}
+
+function validStorySessionId(value) {
+  return /^[A-Za-z0-9_-]{24,128}$/.test(String(value || ''))
+}
+
+function storySessionId(req, { allowLoopback = true } = {}) {
+  const sessionId = readCookie(req, storySessionCookieName)
+  if (validStorySessionId(sessionId)) return sessionId
+  return allowLoopback && isLoopbackRequest(req) ? 'local-loopback-story-session' : ''
+}
+
+function ensureStorySession(req, res) {
+  const existing = storySessionId(req, { allowLoopback: false })
+  if (existing) return existing
+  const sessionId = randomToken(32)
+  const secure = publicOrigin(req).startsWith('https://')
+  res.setHeader('set-cookie', cookieHeader(storySessionCookieName, sessionId, {
+    maxAge: storySessionCookieMaxAge,
+    secure,
+  }))
+  return sessionId
+}
+
+function requireStorySession(req, res) {
+  const sessionId = storySessionId(req)
+  if (sessionId) return sessionId
+  sendJson(res, 401, {
+    code: 'story_session_required',
+    error: 'Load /api/config first to establish the anonymous Product Story session.',
+  })
+  return ''
+}
+
+function ownedStoryJob(req, res, jobId) {
+  const sessionId = requireStorySession(req, res)
+  if (!sessionId) return null
+  const job = storyJobs.get(jobId)
+  if (!job) {
+    sendJson(res, 404, { error: 'Product Story job not found.' })
+    return null
+  }
+  if (job.ownerSessionId !== sessionId) {
+    sendJson(res, 403, {
+      code: 'story_job_owner_required',
+      error: 'This Product Story belongs to a different anonymous session.',
+    })
+    return null
+  }
+  return job
+}
+
+function storyClientKey(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map((value) => value.trim()).filter(Boolean).at(-1) || ''
+  const remote = String(req.socket?.remoteAddress || '').trim()
+  return (forwarded || remote || 'unknown-client').slice(0, 120)
+}
+
+function recentHistory(values, now, windowMs) {
+  return (values || []).filter((timestamp) => now - timestamp < windowMs)
+}
+
+function storyGlobalCreateGuard(req) {
+  const now = Date.now()
+  const clientKey = storyClientKey(req)
+  const clientRecent = recentHistory(storyClientCreateHistory.get(clientKey), now, storySessionCreateWindowMs)
+  const globalRecent = recentHistory(storyGlobalCreateHistory, now, storySessionCreateWindowMs)
+  storyClientCreateHistory.set(clientKey, clientRecent)
+  storyGlobalCreateHistory.splice(0, storyGlobalCreateHistory.length, ...globalRecent)
+  const activeJobs = [...storyJobs.values()].filter((job) => !['ready', 'failed', 'cancelled'].includes(job.status))
+  const planningJobs = activeJobs.filter((job) => ['queued', 'analyzing'].includes(job.status))
+  if (planningJobs.length >= storyPlanningActiveMax) {
+    return { allowed: false, code: 'story_planning_capacity', error: 'Product analysis capacity is busy. Try again after an active Fireworks plan finishes.', retryAfterSeconds: 10 }
+  }
+  if (activeJobs.length >= storyGlobalActiveMax) {
+    return { allowed: false, code: 'story_global_concurrency_limit', error: 'Product Story capacity is full. Try again after an active story completes.', retryAfterSeconds: 15 }
+  }
+  if (clientRecent.length >= storyClientCreateMax) {
+    return { allowed: false, code: 'story_client_rate_limit', error: 'This network has reached the Product Story creation limit.', retryAfterSeconds: 60 }
+  }
+  if (globalRecent.length >= storyGlobalCreateMax) {
+    return { allowed: false, code: 'story_global_rate_limit', error: 'Product Story creation is temporarily at capacity.', retryAfterSeconds: 60 }
+  }
+  return { allowed: true, now, clientKey, clientRecent }
+}
+
+function recordGlobalStoryCreate(guard) {
+  const now = guard.now || Date.now()
+  storyGlobalCreateHistory.push(now)
+  storyClientCreateHistory.set(guard.clientKey, [...(guard.clientRecent || []), now])
+}
+
+function storyCreateGuard(sessionId) {
+  const now = Date.now()
+  const recent = (storySessionCreateHistory.get(sessionId) || [])
+    .filter((timestamp) => now - timestamp < storySessionCreateWindowMs)
+  storySessionCreateHistory.set(sessionId, recent)
+  const activeCount = [...storyJobs.values()].filter((job) => (
+    job.ownerSessionId === sessionId && !['ready', 'failed', 'cancelled'].includes(job.status)
+  )).length
+  if (activeCount >= storySessionActiveMax) {
+    return {
+      allowed: false,
+      code: 'story_session_concurrency_limit',
+      error: `This anonymous session already has ${activeCount} active Product Story jobs.`,
+    }
+  }
+  if (recent.length >= storySessionCreateMax) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((storySessionCreateWindowMs - (now - recent[0])) / 1000))
+    return {
+      allowed: false,
+      code: 'story_session_rate_limit',
+      error: `This anonymous session can create at most ${storySessionCreateMax} Product Story jobs per minute.`,
+      retryAfterSeconds,
+    }
+  }
+  return { allowed: true, recent, now }
+}
+
+function recordStoryCreate(sessionId, guard) {
+  storySessionCreateHistory.set(sessionId, [...(guard.recent || []), guard.now || Date.now()])
+}
+
+function storyUploadGuard(sessionId) {
+  const now = Date.now()
+  const recent = (storySessionUploadHistory.get(sessionId) || [])
+    .filter((timestamp) => now - timestamp < storySessionUploadWindowMs)
+  storySessionUploadHistory.set(sessionId, recent)
+  if (recent.length >= storySessionUploadMax) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((storySessionUploadWindowMs - (now - recent[0])) / 1000))
+    return { allowed: false, recent, now, retryAfterSeconds }
+  }
+  return { allowed: true, recent, now }
+}
+
+function recordStoryUpload(sessionId, guard) {
+  storySessionUploadHistory.set(sessionId, [...(guard.recent || []), guard.now || Date.now()])
+}
+
+function storyGlobalUploadGuard(req) {
+  const now = Date.now()
+  const clientKey = storyClientKey(req)
+  const clientRecent = recentHistory(storyClientUploadHistory.get(clientKey), now, storySessionUploadWindowMs)
+  const globalRecent = recentHistory(storyGlobalUploadHistory, now, storySessionUploadWindowMs)
+  storyClientUploadHistory.set(clientKey, clientRecent)
+  storyGlobalUploadHistory.splice(0, storyGlobalUploadHistory.length, ...globalRecent)
+  if (clientRecent.length >= storyClientUploadMax) {
+    return { allowed: false, code: 'story_client_upload_rate_limit', error: 'This network has reached the product-image upload limit.', retryAfterSeconds: 60 }
+  }
+  if (globalRecent.length >= storyGlobalUploadMax) {
+    return { allowed: false, code: 'story_global_upload_rate_limit', error: 'Product-image upload capacity is temporarily full.', retryAfterSeconds: 60 }
+  }
+  return { allowed: true, now, clientKey, clientRecent }
+}
+
+function recordGlobalStoryUpload(guard) {
+  const now = guard.now || Date.now()
+  storyGlobalUploadHistory.push(now)
+  storyClientUploadHistory.set(guard.clientKey, [...(guard.clientRecent || []), now])
+}
+
+function storyUploadAttemptGuard(req) {
+  const now = Date.now()
+  const clientKey = storyClientKey(req)
+  const clientRecent = recentHistory(storyClientUploadAttemptHistory.get(clientKey), now, storySessionUploadWindowMs)
+  const globalRecent = recentHistory(storyGlobalUploadAttemptHistory, now, storySessionUploadWindowMs)
+  storyClientUploadAttemptHistory.set(clientKey, clientRecent)
+  storyGlobalUploadAttemptHistory.splice(0, storyGlobalUploadAttemptHistory.length, ...globalRecent)
+  if (clientRecent.length >= storyClientUploadAttemptMax) {
+    return { allowed: false, code: 'story_client_upload_attempt_limit', error: 'This network has sent too many upload attempts.', retryAfterSeconds: 60 }
+  }
+  if (globalRecent.length >= storyGlobalUploadAttemptMax) {
+    return { allowed: false, code: 'story_global_upload_attempt_limit', error: 'Image upload validation is temporarily at capacity.', retryAfterSeconds: 30 }
+  }
+  return { allowed: true, now, clientKey, clientRecent }
+}
+
+function recordStoryUploadAttempt(guard) {
+  const now = guard.now || Date.now()
+  storyGlobalUploadAttemptHistory.push(now)
+  storyClientUploadAttemptHistory.set(guard.clientKey, [...(guard.clientRecent || []), now])
+}
+
 function base64Url(buffer) {
   return Buffer.from(buffer).toString('base64url')
 }
@@ -421,6 +688,7 @@ function escapeHtml(value, max = 1200) {
 
 function sanitizeLaunchInput(raw) {
   const input = raw && typeof raw === 'object' ? raw : {}
+  const videoRequest = input.videoRequest && typeof input.videoRequest === 'object' ? input.videoRequest : {}
   const productImage = input.productImage && typeof input.productImage === 'object'
     ? {
         name: cleanText(input.productImage.name, 120),
@@ -438,6 +706,14 @@ function sanitizeLaunchInput(raw) {
     productImage,
     sourceImages: normalizeSourceViews(input.sourceImages),
     capture: normalizeSourceCapture(input.capture),
+    videoRequest: {
+      campaignGoal: cleanText(videoRequest.campaignGoal, 180),
+      scenePolicy: cleanText(videoRequest.scenePolicy, 160),
+      peoplePolicy: cleanText(videoRequest.peoplePolicy, 160),
+      style: cleanText(videoRequest.style, 60),
+      aspect: cleanText(videoRequest.aspect, 20),
+      durationSeconds: Math.max(0, Math.min(20, Number(videoRequest.durationSeconds) || 0)),
+    },
   }
 }
 
@@ -448,6 +724,111 @@ function cleanProductImageDataUrl(value) {
   const buffer = Buffer.from(match[2], 'base64')
   if (!buffer.length || buffer.length > maxUploadBytes) return ''
   return value
+}
+
+function localStoryAssetFileName(req, value) {
+  try {
+    const candidate = new URL(value)
+    const expectedOrigin = new URL(publicOrigin(req)).origin
+    if (candidate.origin !== expectedOrigin || candidate.search || candidate.hash) return ''
+    const match = candidate.pathname.match(/^\/uploads\/([a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(?:avif|gif|jpe?g|png|webp))$/i)
+    return match?.[1] || ''
+  } catch {
+    return ''
+  }
+}
+
+async function validateStorySourceAssets(req, sourceImages, productImage) {
+  if (!Array.isArray(sourceImages) || !sourceImages.length) {
+    return { valid: false, error: 'A Product Story requires at least one uploaded source asset.' }
+  }
+  const primaryProductUrl = cleanHttpsUrl(productImage?.url)
+  if (primaryProductUrl && primaryProductUrl !== sourceImages[0].url) {
+    return { valid: false, error: 'The primary product image must match the first uploaded Product Story source.' }
+  }
+  for (const image of sourceImages) {
+    const fileName = localStoryAssetFileName(req, image.url)
+    if (!fileName) {
+      return {
+        valid: false,
+        error: 'Product Story sources must be same-origin /uploads assets created by Rukter.ai.',
+      }
+    }
+    try {
+      const file = await stat(path.join(uploadDir, fileName))
+      if (!file.isFile() || file.size < 1 || file.size > maxUploadBytes) {
+        return { valid: false, error: 'A Product Story source asset is missing or outside the upload size limit.' }
+      }
+    } catch {
+      return { valid: false, error: 'A Product Story source asset no longer exists on this Rukter.ai runtime.' }
+    }
+  }
+  return { valid: true }
+}
+
+async function uploadStorageUsage() {
+  let entries
+  try {
+    entries = await readdir(uploadDir, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { bytes: 0, files: 0 }
+    throw error
+  }
+  let total = 0
+  let files = 0
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    try {
+      total += (await stat(path.join(uploadDir, entry.name))).size
+      files += 1
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  return { bytes: total, files }
+}
+
+async function pruneStaleUploads(now = Date.now()) {
+  let entries
+  try {
+    entries = await readdir(uploadDir, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { checked: 0, removed: 0 }
+    throw error
+  }
+  let removed = 0
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const filePath = path.join(uploadDir, entry.name)
+    try {
+      const file = await stat(filePath)
+      if (now - file.mtimeMs < uploadRetentionMs) continue
+      await unlink(filePath)
+      removed += 1
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  return { checked: entries.length, removed }
+}
+
+async function ensureUploadStorageCapacity(incomingBytes) {
+  let used = await uploadStorageUsage()
+  if (used.bytes + incomingBytes <= uploadStorageMaxBytes && used.files + 1 <= uploadStorageMaxFiles) return true
+  await pruneStaleUploads()
+  used = await uploadStorageUsage()
+  return used.bytes + incomingBytes <= uploadStorageMaxBytes && used.files + 1 <= uploadStorageMaxFiles
+}
+
+function writeUploadWithinQuota(filePath, buffer) {
+  const operation = uploadStorageMutation.then(async () => {
+    if (!await ensureUploadStorageCapacity(buffer.length)) return false
+    await mkdir(uploadDir, { recursive: true })
+    await writeFile(filePath, buffer)
+    return true
+  })
+  uploadStorageMutation = operation.then(() => undefined, () => undefined)
+  return operation
 }
 
 function hasProductImage(input) {
@@ -959,6 +1340,11 @@ function fallbackLaunchKit(input) {
   const product = inferProductName(input.brief, input.productImage?.name)
   const channel = englishSafeText(input.channel, 'the selected sales channel', 80)
   const market = englishSafeText(input.market, 'the selected market', 120)
+  const requestedScenePolicy = cleanText(input.videoRequest?.scenePolicy, 180)
+    || 'Use a clean product-focused setting without unverified props.'
+  const requestedPeoplePolicy = cleanText(input.videoRequest?.peoplePolicy, 180)
+  const allowBackgroundPeople = /people may appear|background/i.test(requestedPeoplePolicy)
+    && !/\bno people\b|must not appear/i.test(requestedPeoplePolicy)
   const imageCue = input.productImage?.name
     ? `Use ${input.productImage.name} as the primary product reference.`
     : 'Reserve the hero media slot for a clean product image.'
@@ -972,6 +1358,46 @@ function fallbackLaunchKit(input) {
       visibleDetails: input.productImage?.name ? ['Product image attached for visual review.'] : ['No product image was provided.'],
       confidence: hasProductImage(input) ? 'Image attached; AI vision was unavailable for this fallback.' : 'Based on seller notes only.',
       needsReview: ['Verify brand, ingredients, dimensions, price, and regulated claims before publishing.'],
+    },
+    productDNA: {
+      category: product,
+      identitySummary: `The supplied source views are the only authority for the visible identity of this ${product.toLowerCase()}.`,
+      identityLocks: [
+        'Preserve the complete visible silhouette, proportions, colors, surface details, labels, and component arrangement from the source views.',
+      ],
+      materials: [],
+      colors: [],
+      brandMarks: [],
+      visibleText: [],
+      components: [],
+      visualRisks: ['Unverified or unseen product details must not be invented.'],
+      motionAffordances: ['Camera movement, lighting changes, and subtle background parallax only.'],
+    },
+    videoDirection: {
+      concept: input.videoRequest?.campaignGoal || 'A clear product-first reveal grounded only in the supplied source views.',
+      storyArc: 'Establish the full product, reveal directly visible details, and finish on an unobstructed hero view.',
+      pacing: 'Measured commercial pacing with enough hold time to inspect the unchanged product.',
+      scenePolicy: requestedScenePolicy,
+      shots: Array.from({ length: 5 }, (_, index) => ({
+        purpose: index === 0
+          ? 'Establish the complete source product.'
+          : index === 4
+            ? 'Finish on a clear, complete hero view.'
+            : 'Reveal another directly visible source detail without changing the product.',
+        sourceViewIndex: index + 1,
+        caption: index === 0 ? `Meet the ${product}` : index === 4 ? 'Explore the product' : 'See the visible details',
+        camera: index === 0
+          ? 'Use a restrained front-facing push-in that keeps the complete product in frame.'
+          : 'Use subtle camera parallax while keeping the complete source product recognizable.',
+        lighting: 'Use controlled commercial lighting that preserves the observed colors and materials.',
+        environment: requestedScenePolicy,
+        action: 'Move only the camera, light, and background while keeping the product unchanged.',
+        transition: 'Use a clean edit that never obscures the product.',
+        identityLocks: ['Preserve every directly visible product feature from the selected source view.'],
+        allowedChanges: ['camera position', 'lighting', 'clean background treatment'],
+        forbiddenChanges: ['product silhouette', 'product proportions', 'product colors', 'brand marks', 'visible packaging text'],
+        allowPeople: allowBackgroundPeople,
+      })),
     },
     productDetections: hasProductImage(input)
       ? [{ label: product, bbox: { x: 300, y: 50, width: 250, height: 700 }, confidence: 'fallback center-subject estimate' }]
@@ -1069,10 +1495,14 @@ function buildAgentPrompt(input) {
     'You are Rukter.ai Launch Agent, an ecommerce launch strategist and product-image analyst.',
     'Create a complete, practical launch kit for an independent seller.',
     'Return only valid JSON with this exact top-level schema:',
-    '{"productAnalysis":{"summary":"string","productType":"string","visibleDetails":["string"],"confidence":"string","needsReview":["string"]},"productDetections":[{"label":"string","bbox":{"x":0,"y":0,"width":1000,"height":1000},"confidence":"string","rotationDegrees":0}],"creativeDirection":{"recommendedExperience":"editorial-monograph|botanical-cinema|object-gallery|tactile-commerce","artDirection":"string","tone":"string"},"brandAngle":{"positioning":"string","customer":"string","promise":"string"},"hero":{"headline":"string","subheading":"string","primaryCta":"string","secondaryCta":"string"},"storefrontLayout":[{"section":"string","purpose":"string","copy":"string","editableSlots":["string"]}],"mediaPlan":[{"slot":"string","direction":"string","assetKind":"string"}],"seo":{"title":"string","description":"string","keywords":["string"]},"socialCaptions":[{"channel":"string","caption":"string"}],"dashboardReview":["string"]}',
+    '{"productAnalysis":{"summary":"string","productType":"string","visibleDetails":["string"],"confidence":"string","needsReview":["string"]},"productDNA":{"category":"string","identitySummary":"string","identityLocks":["string"],"materials":["string"],"colors":["string"],"brandMarks":["string"],"visibleText":["string"],"components":["string"],"visualRisks":["string"],"motionAffordances":["string"]},"videoDirection":{"concept":"string","storyArc":"string","pacing":"string","scenePolicy":"string","shots":[{"purpose":"string","sourceViewIndex":1,"caption":"string","camera":"string","lighting":"string","environment":"string","action":"string","transition":"string","identityLocks":["string"],"allowedChanges":["string"],"forbiddenChanges":["string"],"allowPeople":false}]},"productDetections":[{"label":"string","bbox":{"x":0,"y":0,"width":1000,"height":1000},"confidence":"string","rotationDegrees":0}],"creativeDirection":{"recommendedExperience":"editorial-monograph|botanical-cinema|object-gallery|tactile-commerce","artDirection":"string","tone":"string"},"brandAngle":{"positioning":"string","customer":"string","promise":"string"},"hero":{"headline":"string","subheading":"string","primaryCta":"string","secondaryCta":"string"},"storefrontLayout":[{"section":"string","purpose":"string","copy":"string","editableSlots":["string"]}],"mediaPlan":[{"slot":"string","direction":"string","assetKind":"string"}],"seo":{"title":"string","description":"string","keywords":["string"]},"socialCaptions":[{"channel":"string","caption":"string"}],"dashboardReview":["string"]}',
     'The output must be specific to the input and must be safe for an unpublished editable draft.',
     `You received ${sourceCount} source view${sourceCount === 1 ? '' : 's'} of the same product. Compare all views before describing the product, and separate directly visible evidence from uncertain details.`,
     'When product images are attached, analyze the pixels as the primary product source. Identify the product category, visible packaging text, colors, materials, form, and apparent use across the complete set of views.',
+    'Build productDNA only from directly visible evidence across the supplied views. identityLocks must name concrete visible instance details that a video renderer must preserve; use empty arrays when a material, color name, brand mark, visible text, or component is not confidently visible. Never insert category stereotypes or components that are not visible.',
+    'Create between 1 and 5 videoDirection.shots as a product-specific creative director plan. Select the strongest source view for each beat, preserve productDNA identity locks, and make camera, light, environment, action, transition, allowed changes, and forbidden changes specific to the visible product evidence.',
+    'Set each shot allowPeople to false by default. It may be true only when the requested people policy explicitly permits people and the creative beat needs non-occluding human context. A no-people policy always requires false.',
+    'The product must remain visually dominant and unobstructed in every shot. Follow the requested campaign goal, scene policy, and people policy only when compatible with preserving the exact source product.',
     `When an image is attached, productDetections is required and must contain between 1 and ${maxProductAssets} boxes for the most visually prominent distinct sellable products in the FIRST source view. Bounding boxes use integer coordinates from 0 to 1000 relative to that complete first image. Keep each box tight around one complete product package and avoid price labels, shelves, faces, printed text fragments, and duplicate boxes.`,
     'For every productDetection, set rotationDegrees to 0, 90, 180, or 270 so printed packaging text reads naturally after clockwise rotation. Use 180 for an upside-down package and keep 0 when it is already upright.',
     'If the upload is a phone screenshot or contains browser/app UI around an embedded product photo, treat all UI chrome as context, not as a product. Locate products inside the embedded photo but keep every bounding-box coordinate relative to the complete uploaded screenshot.',
@@ -1084,8 +1514,8 @@ function buildAgentPrompt(input) {
     'Never fabricate social proof, ratings, sales, cart counts, views, popularity, scarcity, awards, health claims, or certifications. Do not create a Social Proof section unless the seller supplied verifiable proof.',
     'If a detail is only inferred from the image, describe it as apparent or suggested in productAnalysis and omit it from assertive customer-facing claims.',
     'Use productAnalysis.needsReview for details the seller must verify. Keep productAnalysis.summary useful as an editable product description.',
-    'Write every human-readable string in English, even when the seller input is in another language. Translate the meaning and use Latin transliteration for names when needed.',
-    'Do not reproduce non-Latin packaging text. Translate or transliterate visible names into English Latin characters.',
+    'Write buyer-facing marketing, planning explanations, and editable copy in English, even when the seller input is in another language.',
+    'Identity evidence is the exception: productDNA.visibleText must reproduce the exact visible source characters in their original script, and identityLocks or brandMarks may include that exact text so the renderer can preserve it. Never translate or transliterate text inside these identity-evidence fields.',
     'Return exactly 4 storefrontLayout items, 3 mediaPlan items, 3 socialCaptions items, and 4 dashboardReview strings.',
     'Keep every string concise. Do not use newline characters inside string values.',
     'Write the hero as premium buyer-facing storefront copy, not as a description of this tool or workflow.',
@@ -1099,6 +1529,7 @@ function buildAgentPrompt(input) {
     `Target market: ${input.market}`,
     `Primary product image metadata: ${input.productImage ? JSON.stringify(publicProductImageMeta(input.productImage)) : 'none'}`,
     `Source view labels: ${input.sourceImages?.length ? input.sourceImages.map((image, index) => `${index + 1}. ${image.label || image.name || 'Product view'}`).join(' | ') : 'none'}`,
+    `Video direction request: ${JSON.stringify(input.videoRequest || {})}`,
   ].join('\n')
 }
 
@@ -1134,6 +1565,17 @@ function assertLaunchKitSchema(kit) {
   if (!hasItems(kit.productAnalysis?.visibleDetails)) missing.push('productAnalysis.visibleDetails')
   if (!hasText(kit.productAnalysis?.confidence)) missing.push('productAnalysis.confidence')
   if (!hasItems(kit.productAnalysis?.needsReview)) missing.push('productAnalysis.needsReview')
+  if (!hasText(kit.productDNA?.category)) missing.push('productDNA.category')
+  if (!hasText(kit.productDNA?.identitySummary)) missing.push('productDNA.identitySummary')
+  if (!hasItems(kit.productDNA?.identityLocks)) missing.push('productDNA.identityLocks')
+  for (const field of ['materials', 'colors', 'brandMarks', 'visibleText', 'components', 'visualRisks', 'motionAffordances']) {
+    if (!Array.isArray(kit.productDNA?.[field])) missing.push(`productDNA.${field}`)
+  }
+  if (!hasText(kit.videoDirection?.concept)) missing.push('videoDirection.concept')
+  if (!hasText(kit.videoDirection?.storyArc)) missing.push('videoDirection.storyArc')
+  if (!hasText(kit.videoDirection?.pacing)) missing.push('videoDirection.pacing')
+  if (!hasText(kit.videoDirection?.scenePolicy)) missing.push('videoDirection.scenePolicy')
+  if (!hasItems(kit.videoDirection?.shots)) missing.push('videoDirection.shots')
   if (!hasText(kit.creativeDirection?.recommendedExperience)) missing.push('creativeDirection.recommendedExperience')
   if (!hasText(kit.creativeDirection?.artDirection)) missing.push('creativeDirection.artDirection')
   if (!hasText(kit.creativeDirection?.tone)) missing.push('creativeDirection.tone')
@@ -1158,21 +1600,36 @@ function assertLaunchKitSchema(kit) {
   return kit
 }
 
+const unicodeIdentityFields = new Set(['identityLocks', 'visibleText', 'brandMarks'])
+
+function isUnicodeIdentityPath(pathParts) {
+  return pathParts.includes('productDNA') && unicodeIdentityFields.has(pathParts.findLast((part) => typeof part === 'string'))
+    || pathParts.includes('videoDirection') && pathParts.includes('identityLocks')
+}
+
 function assertEnglishLaunchKit(kit) {
-  const pending = [kit]
-  while (pending.length) {
-    const value = pending.pop()
-    if (typeof value === 'string' && containsNonLatinLetter(value)) {
-      throw new Error('Model response contained non-English script.')
+  const visit = (value, pathParts = []) => {
+    if (typeof value === 'string') {
+      if (!isUnicodeIdentityPath(pathParts) && containsNonLatinLetter(value)) {
+        throw new Error('Model response contained non-English script outside identity evidence.')
+      }
+      return
     }
-    if (Array.isArray(value)) pending.push(...value)
-    else if (value && typeof value === 'object') pending.push(...Object.values(value))
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, [...pathParts, index]))
+      return
+    }
+    if (value && typeof value === 'object') {
+      Object.entries(value).forEach(([key, item]) => visit(item, [...pathParts, key]))
+    }
   }
+  visit(kit)
   return kit
 }
 
-function sanitizeEnglishLaunchKit(value) {
+function sanitizeEnglishLaunchKit(value, pathParts = []) {
   if (typeof value === 'string') {
+    if (isUnicodeIdentityPath(pathParts)) return cleanText(value, 240)
     const cleaned = [...value]
       .map((character) => (/\p{L}/u.test(character) && !/\p{Script=Latin}/u.test(character) ? ' ' : character))
       .join('')
@@ -1180,9 +1637,9 @@ function sanitizeEnglishLaunchKit(value) {
       .trim()
     return /[A-Za-z]/.test(cleaned) ? cleaned : 'Non-English product text requires seller verification.'
   }
-  if (Array.isArray(value)) return value.map(sanitizeEnglishLaunchKit)
+  if (Array.isArray(value)) return value.map((item, index) => sanitizeEnglishLaunchKit(item, [...pathParts, index]))
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeEnglishLaunchKit(item)]))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeEnglishLaunchKit(item, [...pathParts, key])]))
   }
   return value
 }
@@ -1463,7 +1920,10 @@ async function callFireworksInference(input) {
   const attempts = []
   const startedAt = Date.now()
   const runtimeConfig = fireworksRuntimeConfig()
-  const { requestTimeoutMs, totalTimeoutMs, maxTokens } = runtimeConfig
+  const { requestTimeoutMs, totalTimeoutMs } = runtimeConfig
+  const maxTokens = input.videoRequest?.style
+    ? Math.max(runtimeConfig.maxTokens, 4096)
+    : runtimeConfig.maxTokens
   const deadline = Date.now() + totalTimeoutMs
 
   for (const model of models) {
@@ -2006,8 +2466,35 @@ function buildDesignQuality(kit, productAssets) {
 }
 
 function storyGpuEnabled() {
-  return Boolean(gpuLeaseOrchestrator && storyOrchestratorUrl())
+  return amdGpuAlwaysOnEnabled
+    && Boolean(gpuLeaseOrchestrator && storyOrchestratorUrl())
     && String(process.env.AMD_GPU_PUBLIC_ENABLED || '').toLowerCase() === 'true'
+}
+
+function amdPreRenderCostTruth({ queueReserved = false } = {}) {
+  if (amdGpuAlwaysOnEnabled) {
+    return queueReserved
+      ? 'This job has a queue reservation but has not started rendering or requested additional GPU provisioning. The persistent AMD worker remains online and credits continue.'
+      : 'No render, queue reservation, or additional GPU provisioning has started for this job. The persistent AMD worker remains online and credits continue.'
+  }
+  return queueReserved
+    ? 'This job has a queue reservation, but per-job GPU billing has not started.'
+    : 'No GPU lease or per-job billing has started.'
+}
+
+function usesPersistentAmdWorker(job) {
+  return Boolean(job?.requestedMode === 'amd_cinematic' && (
+    amdGpuAlwaysOnEnabled || job.gpu?.releasePolicy === 'retain_after_job'
+  ))
+}
+
+function keepPersistentAmdWorkerOnline(job) {
+  job.gpu = {
+    ...job.gpu,
+    status: 'persistent_online',
+    billing: 'persistent_active',
+    releasePolicy: 'retain_after_job',
+  }
 }
 
 function storyOrchestratorUrl() {
@@ -2015,12 +2502,51 @@ function storyOrchestratorUrl() {
 }
 
 function pruneStoryJobs() {
+  const approvalCutoff = Date.now() - storyApprovalTtlMs
+  for (const job of storyJobs.values()) {
+    if (job.status !== 'awaiting_approval' || new Date(job.updatedAt).getTime() >= approvalCutoff) continue
+    job.controller?.abort(new Error('Owner approval window expired.'))
+    settleStoryJobFailure(job, new Error('Owner approval window expired.'), job.controller?.signal || AbortSignal.abort())
+    job.approvalExpiredAt = new Date().toISOString()
+    job.warning = 'Owner approval expired before any AMD render or queue reservation started.'
+    job.queue = {
+      ...job.queue,
+      state: 'approval_expired',
+      position: 0,
+      jobsAhead: 0,
+      completedAt: job.approvalExpiredAt,
+      note: `Owner approval expired. ${amdPreRenderCostTruth()}`,
+    }
+    if (usesPersistentAmdWorker(job)) keepPersistentAmdWorkerOnline(job)
+  }
   const cutoff = Date.now() - storyJobTtlMs
   for (const [id, job] of storyJobs) {
     if (['ready', 'failed', 'cancelled'].includes(job.status) && new Date(job.updatedAt).getTime() < cutoff) {
       storyJobs.delete(id)
     }
   }
+  const createCutoff = Date.now() - storySessionCreateWindowMs
+  for (const history of [storySessionCreateHistory, storyClientCreateHistory]) {
+    for (const [key, timestamps] of history) {
+      const recent = timestamps.filter((timestamp) => timestamp >= createCutoff)
+      if (recent.length) history.set(key, recent)
+      else history.delete(key)
+    }
+  }
+  const recentGlobalCreates = storyGlobalCreateHistory.filter((timestamp) => timestamp >= createCutoff)
+  storyGlobalCreateHistory.splice(0, storyGlobalCreateHistory.length, ...recentGlobalCreates)
+  const uploadCutoff = Date.now() - storySessionUploadWindowMs
+  for (const history of [storySessionUploadHistory, storyClientUploadHistory, storyClientUploadAttemptHistory]) {
+    for (const [key, timestamps] of history) {
+      const recent = timestamps.filter((timestamp) => timestamp >= uploadCutoff)
+      if (recent.length) history.set(key, recent)
+      else history.delete(key)
+    }
+  }
+  const recentGlobalUploads = storyGlobalUploadHistory.filter((timestamp) => timestamp >= uploadCutoff)
+  storyGlobalUploadHistory.splice(0, storyGlobalUploadHistory.length, ...recentGlobalUploads)
+  const recentGlobalUploadAttempts = storyGlobalUploadAttemptHistory.filter((timestamp) => timestamp >= uploadCutoff)
+  storyGlobalUploadAttemptHistory.splice(0, storyGlobalUploadAttemptHistory.length, ...recentGlobalUploadAttempts)
 }
 
 function publicStoryQueue(job) {
@@ -2046,7 +2572,13 @@ function publicStoryQueue(job) {
 }
 
 function publicAmdQueueSnapshot(focusJobId = '') {
+  pruneStoryJobs()
   const snapshot = amdStoryQueue.snapshot()
+  const inProgress = [...storyJobs.values()].filter((job) => (
+    job.requestedMode === 'amd_cinematic' && !['ready', 'failed', 'cancelled'].includes(job.status)
+  ))
+  const planningJobs = inProgress.filter((job) => ['queued', 'analyzing'].includes(job.status)).length
+  const awaitingApprovalJobs = inProgress.filter((job) => job.status === 'awaiting_approval').length
   const normalizedFocusId = String(focusJobId || '').trim()
   const focus = normalizedFocusId ? amdStoryQueue.position(normalizedFocusId) : null
   const pendingReady = snapshot.pending.filter((entry) => entry.ready).length
@@ -2066,6 +2598,9 @@ function publicAmdQueueSnapshot(focusJobId = '') {
     queuedJobs: snapshot.pending.length,
     readyJobs: pendingReady,
     preparingJobs: snapshot.pending.length - pendingReady,
+    inProgressJobs: inProgress.length,
+    planningJobs,
+    awaitingApprovalJobs,
     focus: focus ? {
       state: focus.state,
       position: Number(focus.position) || 0,
@@ -2107,6 +2642,68 @@ function applyGpuTelemetry(job, value) {
   }
 }
 
+function cleanFailureCodes(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map((item) => cleanText(item, 100))
+    .filter(Boolean))].slice(0, 12)
+}
+
+function publicFailureAttempt(value = {}) {
+  return {
+    attempt: Math.max(1, Number(value.attempt) || 1),
+    identityVerified: value.identityVerified === true,
+    failureCodes: cleanFailureCodes(value.failureCodes),
+    clipSimilarityMin: Number.isFinite(Number(value.clipSimilarityMin)) ? Number(value.clipSimilarityMin) : null,
+    ocrRetentionMin: Number.isFinite(Number(value.ocrRetentionMin)) ? Number(value.ocrRetentionMin) : null,
+    ocrRetentionRequired: value.ocrRetentionRequired === true,
+    humanContaminationDetected: value.humanContaminationDetected === true,
+    humanContaminationObserved: value.humanContaminationObserved === true,
+    allowPeople: value.allowPeople === true,
+    sampledFrameIndices: (Array.isArray(value.sampledFrameIndices) ? value.sampledFrameIndices : [])
+      .map((item) => Number(item))
+      .filter(Number.isFinite)
+      .slice(0, 5),
+  }
+}
+
+function normalizeAmdFailureEvidence(error) {
+  const raw = error?.evidence && typeof error.evidence === 'object' ? error.evidence : {}
+  const last = raw.lastEvidence && typeof raw.lastEvidence === 'object' ? raw.lastEvidence : {}
+  const attempts = (Array.isArray(error?.attemptHistory) ? error.attemptHistory : raw.attemptHistory || last.attemptHistory || [])
+    .slice(0, 8)
+    .map(publicFailureAttempt)
+  const failureCodes = cleanFailureCodes(error?.failureCodes?.length ? error.failureCodes : raw.failureCodes || last.failureCodes)
+  if (!failureCodes.length && !attempts.length && !Object.keys(raw).length) return null
+  const shot = Math.max(1, Number(raw.shot) || Number(last.shot) || 1)
+  const shotEvidence = {
+    id: cleanText(raw.shotId || last.id, 80) || `shot-${shot}`,
+    identityVerified: false,
+    failureCodes,
+    attempt: Math.max(1, Number(last.attempt) || attempts.at(-1)?.attempt || attempts.length || 1),
+    maxAttempts: Math.max(1, Number(last.maxAttempts) || attempts.length || 1),
+    clipSimilarityMin: Number.isFinite(Number(last.clipSimilarityMin)) ? Number(last.clipSimilarityMin) : null,
+    threshold: Number.isFinite(Number(last.threshold)) ? Number(last.threshold) : null,
+    ocrRetentionMin: Number.isFinite(Number(last.ocrRetentionMin)) ? Number(last.ocrRetentionMin) : null,
+    ocrRetentionThreshold: Number.isFinite(Number(last.ocrRetentionThreshold)) ? Number(last.ocrRetentionThreshold) : null,
+    ocrRetentionRequired: last.ocrRetentionRequired === true,
+    humanContaminationDetected: last.humanContaminationDetected === true,
+    humanContaminationObserved: last.humanContaminationObserved === true,
+    allowPeople: last.allowPeople === true,
+    sampledFrameIndices: publicFailureAttempt(last).sampledFrameIndices,
+    attemptHistory: attempts,
+  }
+  return {
+    identityVerified: false,
+    method: 'Five-frame CLIP similarity, OCR retention when detectable, and shot policy checks',
+    shot,
+    shotId: shotEvidence.id,
+    failureCodes,
+    observedFailureCodes: cleanFailureCodes(raw.observedFailureCodes || last.observedFailureCodes),
+    attemptHistory: attempts,
+    shots: [shotEvidence],
+  }
+}
+
 function publicStoryJob(job) {
   if (!job) return null
   return {
@@ -2119,6 +2716,7 @@ function publicStoryJob(job) {
     aspect: job.request.aspect,
     durationSeconds: job.request.durationSeconds,
     renderResolution: job.request.renderResolution,
+    direction: job.request.direction,
     sourceImages: job.request.sourceImages,
     activity: job.activity,
     currentStep: job.currentStep,
@@ -2126,12 +2724,37 @@ function publicStoryJob(job) {
     totalShots: job.plan?.shots?.length || Math.min(5, job.request.sourceImages.length),
     plan: job.plan || null,
     productAnalysis: job.productAnalysis || null,
+    productDNA: job.productDNA || null,
+    videoDirection: job.videoDirection || null,
     aiDirection: job.aiDirection || null,
     output: job.output || null,
+    failureEvidence: job.failureEvidence || null,
+    failureCodes: job.failureCodes || [],
+    attemptHistory: job.attemptHistory || [],
     gpu: job.gpu,
     queue: publicStoryQueue(job),
     warning: job.warning || '',
     error: job.error || '',
+    approval: {
+      required: job.requestedMode === 'amd_cinematic',
+      status: job.requestedMode !== 'amd_cinematic'
+        ? 'not_required'
+        : job.approvedAt
+          ? 'approved'
+          : job.status === 'awaiting_approval'
+            ? 'awaiting_owner'
+            : job.approvalExpiredAt
+              ? 'expired'
+            : ['failed', 'cancelled'].includes(job.status)
+              ? 'not_approved'
+              : 'planning',
+      approvedAt: job.approvedAt || null,
+      expiresAt: job.status === 'awaiting_approval'
+        ? new Date(new Date(job.updatedAt).getTime() + storyApprovalTtlMs).toISOString()
+        : null,
+      expiredAt: job.approvalExpiredAt || null,
+      gpuQueueReserved: Boolean(amdStoryQueue.position(job.id)),
+    },
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
   }
@@ -2185,9 +2808,9 @@ function syncAmdStoryQueueState(snapshot) {
         position: 0,
         jobsAhead: 0,
         startedAt: job.queue?.startedAt || now,
-        note: 'GPU queue slot acquired. Checking AMD capacity before billing starts.',
+        note: `GPU queue slot acquired. Checking AMD capacity. ${amdPreRenderCostTruth({ queueReserved: true })}`,
       }
-      updateStoryStep(job, 'gpu_queue', 'active', 'Queue slot acquired; checking AMD capacity. No GPU billing has started', 90)
+      updateStoryStep(job, 'gpu_queue', 'active', `Queue slot acquired; checking AMD capacity. ${amdPreRenderCostTruth({ queueReserved: true })}`, 90)
       continue
     }
 
@@ -2203,7 +2826,7 @@ function syncAmdStoryQueueState(snapshot) {
       jobsAhead,
       enqueuedAt: job.queue?.enqueuedAt || pending.entry.reservedAt || now,
       note: pending.entry.ready
-        ? `Waiting for the single AMD render slot. ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead; GPU billing has not started.`
+        ? `Waiting for the single AMD render slot. ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead. ${amdPreRenderCostTruth({ queueReserved: true })}`
         : `Queue place reserved while Fireworks prepares the product brief and video prompts. ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead.`,
     }
     if (pending.entry.ready) {
@@ -2212,7 +2835,7 @@ function syncAmdStoryQueueState(snapshot) {
         job,
         'gpu_queue',
         'active',
-        `Queue position ${position}; ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead. GPU billing has not started`,
+        `Queue position ${position}; ${jobsAhead} job${jobsAhead === 1 ? '' : 's'} ahead. ${amdPreRenderCostTruth({ queueReserved: true })}`,
         Math.max(5, 80 - jobsAhead * 10),
       )
     } else {
@@ -2254,19 +2877,19 @@ async function waitForAmdCapacity(job, signal) {
     if (signal.aborted) throw signal.reason || new Error('Product Story job cancelled.')
     job.status = 'waiting_for_gpu'
     job.queue.state = 'checking_capacity'
-    job.queue.note = 'First in queue. Checking AMD Developer Cloud capacity; GPU billing has not started.'
-    updateStoryStep(job, 'gpu_queue', 'active', 'First in queue; checking AMD Developer Cloud capacity. No GPU billing has started', 95)
+    job.queue.note = `First in queue. Checking AMD Developer Cloud capacity. ${amdPreRenderCostTruth({ queueReserved: true })}`
+    updateStoryStep(job, 'gpu_queue', 'active', `First in queue; checking AMD Developer Cloud capacity. ${amdPreRenderCostTruth({ queueReserved: true })}`, 95)
     try {
       const capacity = await gpuLeaseOrchestrator.checkCapacity({ refresh: true })
       if (capacity.available || capacity.requestable) return capacity
       job.queue.state = 'capacity_wait'
-      job.queue.note = capacity.reason || 'Waiting for AMD MI300X capacity. GPU billing has not started.'
+      job.queue.note = capacity.reason || `Waiting for AMD MI300X capacity. ${amdPreRenderCostTruth({ queueReserved: true })}`
       updateStoryStep(job, 'gpu_queue', 'active', `${job.queue.note} Retrying automatically`, 95)
     } catch (error) {
       if (!isRetriableAmdCapacityError(error)) throw error
       job.queue.state = 'capacity_wait'
       job.queue.note = `AMD capacity check is temporarily unavailable: ${error instanceof Error ? error.message : String(error)}`
-      updateStoryStep(job, 'gpu_queue', 'active', 'Capacity check is temporarily unavailable; retrying automatically with no GPU billing', 95)
+      updateStoryStep(job, 'gpu_queue', 'active', `Capacity check is temporarily unavailable; retrying automatically. ${amdPreRenderCostTruth({ queueReserved: true })}`, 95)
     }
     await storyDelay(amdCapacityPollMs, signal)
   }
@@ -2372,12 +2995,18 @@ function handleAmdStoryEvent(job, event) {
   const persistentLease = eventReleasePolicy === 'retain_after_job'
   if (event.type === 'lease_request') {
     job.status = 'gpu_starting'
-    updateStoryStep(job, 'gpu_provision', 'active', 'Requesting one zero-idle AMD GPU Droplet', 10)
+    updateStoryStep(job, 'gpu_provision', 'active', usesPersistentAmdWorker(job)
+      ? 'Connecting this render to the always-on AMD GPU worker'
+      : 'Requesting one per-job AMD GPU worker', 10)
   } else if (event.type === 'lease_progress') {
     job.status = 'gpu_starting'
     job.queue.state = 'active'
-    job.queue.note = 'AMD render slot active. This job exclusively owns the GPU lifecycle until release.'
-    updateStoryStep(job, 'gpu_queue', 'completed', 'Exclusive AMD render slot acquired; no other Product Story can use this lifecycle')
+    job.queue.note = persistentLease
+      ? 'AMD render slot active. This job exclusively uses the always-on worker until rendering completes; the worker remains online afterward.'
+      : 'AMD render slot active. This job exclusively owns the per-job worker until release.'
+    updateStoryStep(job, 'gpu_queue', 'completed', persistentLease
+      ? 'Exclusive AMD render slot acquired on the always-on worker'
+      : 'Exclusive AMD render slot acquired; no other Product Story can use this worker')
     job.gpu = {
       status: event.lease?.phase || 'provisioning',
       billing: persistentLease ? 'persistent_active' : 'active_for_job',
@@ -2425,9 +3054,14 @@ function handleAmdStoryEvent(job, event) {
     job.gpu.releasePolicy = eventReleasePolicy
     updateStoryStep(job, 'release_gpu', 'active', event.detail, 50)
   } else if (event.type === 'lease_released') {
-    job.gpu.status = 'released'
-    job.gpu.billing = 'inactive'
-    updateStoryStep(job, 'release_gpu', 'completed', 'AMD GPU destroyed; billing stopped and the next queued job may start')
+    if (usesPersistentAmdWorker(job)) {
+      keepPersistentAmdWorkerOnline(job)
+      updateStoryStep(job, 'release_gpu', 'skipped', 'Render lifecycle complete; the persistent AMD worker remains online and credits continue')
+    } else {
+      job.gpu.status = 'released'
+      job.gpu.billing = 'inactive'
+      updateStoryStep(job, 'release_gpu', 'completed', 'Per-job AMD GPU released; billing stopped and the next queued job may start')
+    }
   } else if (event.type === 'lease_retained') {
     job.gpu.status = 'ready'
     job.gpu.billing = 'persistent_active'
@@ -2477,21 +3111,34 @@ async function runAmdCinematicStory(job, signal) {
       if (signal.aborted) throw error
       if (!job.gpu?.leaseId && isRetriableAmdCapacityError(error)) {
         job.status = 'waiting_for_gpu'
-        job.gpu.status = 'offline'
-        job.gpu.billing = 'inactive'
+        if (usesPersistentAmdWorker(job)) keepPersistentAmdWorkerOnline(job)
+        else {
+          job.gpu.status = 'offline'
+          job.gpu.billing = 'inactive'
+        }
         job.queue.state = 'capacity_wait'
-        job.queue.note = 'AMD capacity changed before the Droplet was created. Retrying automatically with no GPU billing.'
-        updateStoryStep(job, 'gpu_queue', 'active', 'AMD capacity changed before provisioning; retrying automatically with no GPU billing', 95)
+        job.queue.note = `AMD capacity changed before additional provisioning. Retrying automatically. ${amdPreRenderCostTruth({ queueReserved: true })}`
+        updateStoryStep(job, 'gpu_queue', 'active', `AMD capacity changed before additional provisioning; retrying automatically. ${amdPreRenderCostTruth({ queueReserved: true })}`, 95)
         updateStoryStep(job, 'gpu_provision', 'pending', 'Waiting for AMD capacity before requesting a Droplet', 0)
         await storyDelay(amdCapacityPollMs, signal)
         continue
       }
 
+      const failureEvidence = normalizeAmdFailureEvidence(error)
+      if (failureEvidence) {
+        job.failureEvidence = failureEvidence
+        job.failureCodes = failureEvidence.failureCodes
+        job.attemptHistory = failureEvidence.attemptHistory
+      }
+
       const releaseFailed = job.gpu?.status === 'release_failed'
       const gpuProvisioned = Boolean(job.gpu?.leaseId)
       job.warning = releaseFailed
-        ? `AMD GPU release failed: ${error instanceof Error ? error.message : String(error)} Use Release GPU now; the TTL reaper remains the final safeguard.`
+        ? usesPersistentAmdWorker(job)
+          ? `Render cleanup reported an error, but the persistent AMD worker remains online and credits continue: ${error instanceof Error ? error.message : String(error)}`
+          : `AMD GPU release failed: ${error instanceof Error ? error.message : String(error)} The TTL reaper remains the final safeguard.`
         : `AMD Cinematic failed: ${error instanceof Error ? error.message : String(error)}`
+      if (releaseFailed && usesPersistentAmdWorker(job)) keepPersistentAmdWorkerOnline(job)
       if (!releaseFailed) {
         if (!gpuProvisioned) updateStoryStep(job, 'gpu_provision', 'failed', 'AMD GPU job failed; no motion preview was substituted')
         for (const stepId of ['motion_shots', 'identity_check', 'video_composition']) {
@@ -2501,9 +3148,14 @@ async function runAmdCinematicStory(job, signal) {
           }
         }
         if (!gpuProvisioned) {
-          job.gpu.status = 'offline'
-          job.gpu.billing = 'inactive'
-          updateStoryStep(job, 'release_gpu', 'skipped', 'No GPU Droplet was created; billing remained inactive')
+          if (usesPersistentAmdWorker(job)) {
+            keepPersistentAmdWorkerOnline(job)
+            updateStoryStep(job, 'release_gpu', 'skipped', 'No additional GPU was provisioned; the persistent AMD worker remains online and credits continue')
+          } else {
+            job.gpu.status = 'offline'
+            job.gpu.billing = 'inactive'
+            updateStoryStep(job, 'release_gpu', 'skipped', 'No per-job GPU lease was created; billing remained inactive')
+          }
         }
       }
       throw error
@@ -2564,6 +3216,8 @@ async function processStoryJob(jobId) {
     const generated = await buildStoryLaunchKit(job.input)
     if (controller.signal.aborted) throw controller.signal.reason
     job.productAnalysis = generated.kit.productAnalysis
+    job.productDNA = generated.kit.productDNA
+    job.videoDirection = generated.kit.videoDirection
     job.aiDirection = buildStoryAiTrace({
       kit: generated.kit,
       mode: generated.mode,
@@ -2573,6 +3227,21 @@ async function processStoryJob(jobId) {
     })
     if (generated.mode !== 'fireworks_inference' && generated.kit.modelWarning) {
       job.warning = `Vision provider fallback: ${generated.kit.modelWarning}`
+    }
+    if (job.requestedMode === 'amd_cinematic' && generated.mode !== 'fireworks_inference') {
+      job.productDNA = null
+      job.videoDirection = null
+      job.queue = {
+        ...job.queue,
+        state: 'not_started',
+        position: 0,
+        jobsAhead: 0,
+        enqueuedAt: null,
+        note: `Fireworks Product DNA was unavailable, so the AMD render was not started. ${amdPreRenderCostTruth()}`,
+      }
+      if (usesPersistentAmdWorker(job)) keepPersistentAmdWorkerOnline(job)
+      updateStoryStep(job, 'vision_analysis', 'failed', 'Fireworks Product DNA unavailable; AMD render was not started', 100)
+      throw new Error('Fireworks Product DNA unavailable; AMD render was not started.')
     }
     updateStoryStep(
       job,
@@ -2598,8 +3267,19 @@ async function processStoryJob(jobId) {
 
     if (job.requestedMode === 'amd_cinematic') {
       if (!storyGpuEnabled()) throw new Error('AMD Cinematic is unavailable until a verified Wan 2.2 GPU worker is online.')
-      job.status = 'waiting_for_gpu'
-      if (!amdStoryQueue.markReady(job.id)) throw new Error('The AMD render queue reservation was lost.')
+      job.status = 'awaiting_approval'
+      job.queue = {
+        ...job.queue,
+        state: 'awaiting_approval',
+        position: 0,
+        jobsAhead: 0,
+        enqueuedAt: null,
+        startedAt: null,
+        completedAt: null,
+        note: `Product DNA and video direction are ready for owner review. ${amdPreRenderCostTruth()}`,
+      }
+      updateStoryStep(job, 'gpu_queue', 'pending', `Awaiting owner approval before entering the AMD render queue. ${amdPreRenderCostTruth()}`, 0)
+      touchStoryJob(job)
       return
     }
 
@@ -2619,9 +3299,30 @@ async function processStoryJob(jobId) {
 async function handleCreateStoryJob(req, res) {
   try {
     pruneStoryJobs()
+    const ownerSessionId = requireStorySession(req, res)
+    if (!ownerSessionId) return
     const rawBody = await readBody(req)
     const parsed = rawBody ? JSON.parse(rawBody) : {}
     const request = normalizeStoryRequest(parsed)
+    if (request.sourceImages.length < productStoryLimits.minImages) {
+      sendJson(res, 400, { error: `Upload at least ${formatCount(productStoryLimits.minImages, 'product photo')}.` })
+      return
+    }
+    const sourceValidation = await validateStorySourceAssets(req, request.sourceImages, parsed.productImage)
+    if (!sourceValidation.valid) {
+      sendJson(res, 400, { code: 'invalid_story_source', error: sourceValidation.error })
+      return
+    }
+    const globalCreateGuard = storyGlobalCreateGuard(req)
+    if (!globalCreateGuard.allowed) {
+      res.setHeader('retry-after', String(globalCreateGuard.retryAfterSeconds || 15))
+      sendJson(res, 429, {
+        code: globalCreateGuard.code,
+        error: globalCreateGuard.error,
+        retryAfterSeconds: globalCreateGuard.retryAfterSeconds || 15,
+      })
+      return
+    }
     if (request.mode === 'amd_cinematic' && !storyGpuEnabled()) {
       sendJson(res, 409, {
         code: 'amd_cinematic_unavailable',
@@ -2629,17 +3330,32 @@ async function handleCreateStoryJob(req, res) {
       })
       return
     }
-    if (request.sourceImages.length < productStoryLimits.minImages) {
-      sendJson(res, 400, { error: `Upload at least ${formatCount(productStoryLimits.minImages, 'product photo')}.` })
+    const createGuard = storyCreateGuard(ownerSessionId)
+    if (!createGuard.allowed) {
+      if (createGuard.retryAfterSeconds) res.setHeader('retry-after', String(createGuard.retryAfterSeconds))
+      sendJson(res, 429, {
+        code: createGuard.code,
+        error: createGuard.error,
+        ...(createGuard.retryAfterSeconds ? { retryAfterSeconds: createGuard.retryAfterSeconds } : {}),
+      })
       return
     }
+    const primarySource = request.sourceImages[0]
     const input = sanitizeLaunchInput({
       brief: parsed.brief,
       channel: parsed.channel,
       market: parsed.market,
-      productImage: parsed.productImage,
+      // Fireworks and AMD must use the same server-validated source pixels.
+      // Never let a client-supplied data URL override the trusted upload URL.
+      productImage: primarySource,
       sourceImages: request.sourceImages,
       capture: { kind: 'multi_photo', extractedFrameCount: request.sourceImages.length },
+      videoRequest: {
+        ...request.direction,
+        style: request.style,
+        aspect: request.aspect,
+        durationSeconds: request.durationSeconds,
+      },
     })
     const now = new Date().toISOString()
     const id = `story_${randomUUID().replaceAll('-', '')}`
@@ -2648,8 +3364,10 @@ async function handleCreateStoryJob(req, res) {
       const generationStep = activity.find((step) => step.id === 'motion_shots')
       if (generationStep) generationStep.label = 'Source motion preview'
     }
+    const persistentAmdLifecycle = request.mode === 'amd_cinematic' && amdGpuAlwaysOnEnabled
     const job = {
       id,
+      ownerSessionId,
       status: 'queued',
       requestedMode: request.mode,
       effectiveMode: request.mode === 'amd_cinematic' && storyGpuEnabled() ? 'amd_cinematic' : 'fast_story',
@@ -2659,46 +3377,52 @@ async function handleCreateStoryJob(req, res) {
       currentStep: 'source_upload',
       currentShot: 0,
       plan: null,
+      productAnalysis: null,
+      productDNA: null,
+      videoDirection: null,
       aiDirection: null,
       output: null,
-      gpu: {
-        status: 'offline',
-        billing: 'inactive',
-        releasePolicy: 'destroy_after_job',
-        device: '',
-        rocmVersion: '',
-        leaseId: '',
-      },
+      failureEvidence: null,
+      failureCodes: [],
+      attemptHistory: [],
+      gpu: persistentAmdLifecycle
+        ? {
+            status: 'persistent_online',
+            billing: 'persistent_active',
+            releasePolicy: 'retain_after_job',
+            device: '',
+            rocmVersion: '',
+            leaseId: '',
+          }
+        : {
+            status: 'offline',
+            billing: 'inactive',
+            releasePolicy: 'destroy_after_job',
+            device: '',
+            rocmVersion: '',
+            leaseId: '',
+          },
       queue: {
-        state: request.mode === 'amd_cinematic' ? 'preparing' : 'not_required',
+        state: request.mode === 'amd_cinematic' ? 'planning' : 'not_required',
         position: 0,
         jobsAhead: 0,
-        enqueuedAt: request.mode === 'amd_cinematic' ? now : null,
+        enqueuedAt: null,
         startedAt: null,
         completedAt: null,
         note: request.mode === 'amd_cinematic'
-          ? 'FIFO place reserved while Fireworks prepares the product brief and video prompts.'
+          ? `Fireworks is preparing Product DNA and video direction. ${amdPreRenderCostTruth()}`
           : 'Motion Preview does not require the AMD render queue.',
       },
       warning: '',
       error: '',
       controller: new AbortController(),
+      approvedAt: null,
       createdAt: now,
       updatedAt: now,
     }
     storyJobs.set(id, job)
-    if (request.mode === 'amd_cinematic') {
-      const reservation = amdStoryQueue.reserve(id)
-      if (!reservation.accepted) {
-        storyJobs.delete(id)
-        sendJson(res, 429, {
-          code: 'amd_queue_full',
-          error: `The AMD render queue is full (${reservation.capacity} jobs). Try again after a queued job finishes or is cancelled.`,
-          queue: { policy: 'fifo', concurrency: 1, capacity: reservation.capacity },
-        })
-        return
-      }
-    }
+    recordStoryCreate(ownerSessionId, createGuard)
+    recordGlobalStoryCreate(globalCreateGuard)
     setTimeout(() => processStoryJob(id), 0)
     sendJson(res, 202, publicStoryJob(job))
   } catch (error) {
@@ -2706,13 +3430,75 @@ async function handleCreateStoryJob(req, res) {
   }
 }
 
-function handleGetStoryJob(res, jobId) {
-  const job = storyJobs.get(jobId)
-  if (!job) {
-    sendJson(res, 404, { error: 'Product Story job not found.' })
-    return
-  }
+function handleGetStoryJob(req, res, jobId) {
+  const job = ownedStoryJob(req, res, jobId)
+  if (!job) return
   sendJson(res, 200, publicStoryJob(job))
+}
+
+function approveStoryJob(job, expectedUpdatedAt = '') {
+  if (job.requestedMode !== 'amd_cinematic') {
+    return { ok: false, status: 409, code: 'approval_not_required', error: 'Motion Preview does not require AMD render approval.' }
+  }
+  if (job.status !== 'awaiting_approval') {
+    if (job.approvedAt && !['failed', 'cancelled'].includes(job.status)) return { ok: true, status: 200 }
+    return {
+      ok: false,
+      status: 409,
+      code: 'story_not_awaiting_approval',
+      error: `This Product Story cannot be approved while its status is ${job.status}.`,
+    }
+  }
+  if (expectedUpdatedAt && expectedUpdatedAt !== job.updatedAt) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'story_approval_stale',
+      error: 'The Product DNA or directed shots changed after this review loaded. Review the latest plan before approving.',
+    }
+  }
+  if (!storyGpuEnabled()) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'amd_cinematic_unavailable',
+      error: 'AMD Cinematic is unavailable until a verified Wan 2.2 GPU worker is online.',
+    }
+  }
+  const reservation = amdStoryQueue.reserve(job.id)
+  if (!reservation.accepted) {
+    return {
+      ok: false,
+      status: 429,
+      code: 'amd_queue_full',
+      error: `The AMD render queue is full (${reservation.capacity} jobs). Review is preserved; approve again after a queued job finishes.`,
+      queue: { policy: 'fifo', concurrency: 1, capacity: reservation.capacity },
+    }
+  }
+  job.approvedAt = new Date().toISOString()
+  job.status = 'waiting_for_gpu'
+  job.controller = job.controller?.signal?.aborted ? new AbortController() : (job.controller || new AbortController())
+  job.queue = {
+    ...job.queue,
+    state: 'waiting',
+    enqueuedAt: reservation.reservedAt || new Date().toISOString(),
+    note: `Owner approved the Product DNA and video direction. Waiting in the AMD render queue. ${amdPreRenderCostTruth({ queueReserved: true })}`,
+  }
+  updateStoryStep(job, 'gpu_queue', 'active', `Owner approved the render; waiting in the AMD queue. ${amdPreRenderCostTruth({ queueReserved: true })}`, 5)
+  if (!amdStoryQueue.markReady(job.id)) {
+    amdStoryQueue.cancel(job.id)
+    job.approvedAt = null
+    job.status = 'awaiting_approval'
+    job.queue = {
+      ...job.queue,
+      state: 'awaiting_approval',
+      enqueuedAt: null,
+      note: 'Queue reservation failed. Product DNA and video direction remain ready for owner review.',
+    }
+    return { ok: false, status: 409, code: 'amd_queue_reservation_lost', error: 'The AMD queue reservation could not be activated.' }
+  }
+  touchStoryJob(job)
+  return { ok: true, status: 202 }
 }
 
 function cancelStoryJob(job) {
@@ -2725,9 +3511,12 @@ function cancelStoryJob(job) {
   if (activeGpuJob) {
     job.status = 'cancelling'
     job.queue.state = 'cancelling'
-    job.queue.note = 'Cancelling the active render and destroying its AMD GPU before the next job starts.'
+    const cancellationDetail = usesPersistentAmdWorker(job)
+      ? 'Cancelling the active worker job; the always-on AMD GPU will be retained for the next job and credits continue.'
+      : 'Cancelling the active render and releasing its per-job AMD GPU before the next job starts.'
+    job.queue.note = cancellationDetail
     const active = job.activity.find((step) => step.status === 'active')
-    if (active) updateStoryStep(job, active.id, 'active', 'Cancellation requested; destroying the AMD GPU before advancing the queue', active.progress)
+    if (active) updateStoryStep(job, active.id, 'active', cancellationDetail, active.progress)
     touchStoryJob(job)
     return
   }
@@ -2736,23 +3525,29 @@ function cancelStoryJob(job) {
   if (removedFromQueue) {
     const queueStep = job.activity.find((step) => step.id === 'gpu_queue')
     if (queueStep && !['completed', 'cancelled'].includes(queueStep.status)) {
-      updateStoryStep(job, 'gpu_queue', 'cancelled', 'Removed from the AMD render queue; no GPU billing started')
+      updateStoryStep(job, 'gpu_queue', 'cancelled', `Removed from the AMD render queue. ${amdPreRenderCostTruth()}`)
     }
   }
 }
 
 async function releaseStoryGpu(job) {
+  const persistent = usesPersistentAmdWorker(job)
   const removedFromQueue = amdStoryQueue.cancel(job.id)
-  job.controller?.abort(new Error('GPU released by user.'))
+  job.controller?.abort(new Error(persistent ? 'Render cancelled; persistent AMD worker retained.' : 'GPU released by user.'))
   if (removedFromQueue && !job.gpu?.leaseId) {
     settleStoryJobFailure(job, new Error('GPU queue place released by user.'), job.controller?.signal || AbortSignal.abort())
-    updateStoryStep(job, 'gpu_queue', 'cancelled', 'Removed from the AMD render queue; no GPU Droplet existed')
+    if (persistent) {
+      keepPersistentAmdWorkerOnline(job)
+      updateStoryStep(job, 'release_gpu', 'skipped', 'Queue reservation removed; the persistent AMD worker remains online and credits continue')
+    } else {
+      updateStoryStep(job, 'gpu_queue', 'cancelled', 'Removed from the AMD render queue; no per-job GPU lease existed')
+    }
     return
   }
   const leaseId = job.gpu?.leaseId
   const orchestratorUrl = storyOrchestratorUrl()
-  let releaseResult = null
-  if (leaseId && orchestratorUrl) {
+  let releaseResult = persistent ? { status: 'retained', releasePolicy: 'retain_after_job' } : null
+  if (!persistent && leaseId && orchestratorUrl) {
     const response = await fetch(`${orchestratorUrl.replace(/\/$/, '')}/v1/leases/${encodeURIComponent(leaseId)}/release`, {
       method: 'POST',
       headers: {
@@ -2766,15 +3561,13 @@ async function releaseStoryGpu(job) {
     releaseResult = await response.json().catch(() => null)
   }
   if (releaseResult?.status === 'retained' || releaseResult?.releasePolicy === 'retain_after_job') {
-    job.gpu.status = 'ready'
-    job.gpu.billing = 'persistent_active'
-    job.gpu.releasePolicy = 'retain_after_job'
-    updateStoryStep(job, 'release_gpu', 'skipped', 'Persistent AMD GPU retained online by owner policy')
+    keepPersistentAmdWorkerOnline(job)
+    updateStoryStep(job, 'release_gpu', 'skipped', 'Persistent AMD worker retained online by owner policy; credits continue')
     return
   }
   job.gpu.status = leaseId ? 'released' : 'offline'
   job.gpu.billing = 'inactive'
-  updateStoryStep(job, 'release_gpu', leaseId ? 'completed' : 'skipped', leaseId ? 'AMD GPU destroyed; billing stopped' : 'No GPU Droplet existed; billing remained inactive')
+  updateStoryStep(job, 'release_gpu', leaseId ? 'completed' : 'skipped', leaseId ? 'Per-job AMD GPU released; billing stopped' : 'No per-job GPU lease existed; billing remained inactive')
 }
 
 function gpuControlAuthorized(req) {
@@ -2839,10 +3632,12 @@ async function handleAmdStoryAssetUpload(req, res) {
   try {
     const video = await readBuffer(req, maxVideoUploadBytes)
     if (!video.length) throw new Error('AMD story output is empty.')
-    await mkdir(uploadDir, { recursive: true })
     const jobId = cleanText(req.headers['x-rukter-job-id'], 80).replace(/[^a-zA-Z0-9_-]/g, '') || 'story'
     const fileName = `${jobId}-${randomUUID()}.mp4`
-    await writeFile(path.join(uploadDir, fileName), video)
+    if (!await writeUploadWithinQuota(path.join(uploadDir, fileName), video)) {
+      sendJson(res, 507, { code: 'upload_storage_full', error: 'AMD output storage is temporarily full.' })
+      return
+    }
     sendJson(res, 201, {
       status: 'stored',
       type: 'video/mp4',
@@ -2973,6 +3768,29 @@ async function handleLaunchKit(req, res) {
 
 async function handleProductImageUpload(req, res) {
   try {
+    const ownerSessionId = requireStorySession(req, res)
+    if (!ownerSessionId) return
+    const uploadAttemptGuard = storyUploadAttemptGuard(req)
+    if (!uploadAttemptGuard.allowed) {
+      res.setHeader('retry-after', String(uploadAttemptGuard.retryAfterSeconds))
+      sendJson(res, 429, {
+        code: uploadAttemptGuard.code,
+        error: uploadAttemptGuard.error,
+        retryAfterSeconds: uploadAttemptGuard.retryAfterSeconds,
+      })
+      return
+    }
+    recordStoryUploadAttempt(uploadAttemptGuard)
+    const uploadGuard = storyUploadGuard(ownerSessionId)
+    if (!uploadGuard.allowed) {
+      res.setHeader('retry-after', String(uploadGuard.retryAfterSeconds))
+      sendJson(res, 429, {
+        code: 'story_session_upload_rate_limit',
+        error: `This anonymous session can upload at most ${storySessionUploadMax} product images per minute.`,
+        retryAfterSeconds: uploadGuard.retryAfterSeconds,
+      })
+      return
+    }
     const rawBody = await readBody(req)
     const parsed = rawBody ? JSON.parse(rawBody) : {}
     const name = cleanText(parsed.name, 120) || 'product-image'
@@ -2989,17 +3807,59 @@ async function handleProductImageUpload(req, res) {
       sendJson(res, 400, { error: 'Product image must be between 1 byte and 4 MB.' })
       return
     }
-    await mkdir(uploadDir, { recursive: true })
+    let metadata
+    try {
+      metadata = await sharp(buffer, { animated: true, limitInputPixels: maxUploadPixels }).metadata()
+    } catch {
+      sendJson(res, 400, { error: 'Product image could not be decoded safely or exceeds the pixel limit.' })
+      return
+    }
+    const acceptedFormats = {
+      'image/avif': new Set(['avif', 'heif']),
+      'image/gif': new Set(['gif']),
+      'image/jpeg': new Set(['jpeg']),
+      'image/png': new Set(['png']),
+      'image/webp': new Set(['webp']),
+    }
+    const width = Number(metadata.width) || 0
+    const height = Number(metadata.height) || 0
+    const frameHeight = Number(metadata.pageHeight) || height
+    const pages = Math.max(1, Number(metadata.pages) || 1)
+    const decodedPixels = width * frameHeight * pages
+    if (!acceptedFormats[type]?.has(String(metadata.format || '').toLowerCase())
+      || width < 1 || frameHeight < 1
+      || width > maxUploadDimension || frameHeight > maxUploadDimension
+      || decodedPixels > maxUploadPixels) {
+      sendJson(res, 400, { error: `Product image must decode as ${type} within ${maxUploadDimension}px and ${maxUploadPixels.toLocaleString('en-US')} total pixels.` })
+      return
+    }
+    const globalUploadGuard = storyGlobalUploadGuard(req)
+    if (!globalUploadGuard.allowed) {
+      res.setHeader('retry-after', String(globalUploadGuard.retryAfterSeconds))
+      sendJson(res, 429, {
+        code: globalUploadGuard.code,
+        error: globalUploadGuard.error,
+        retryAfterSeconds: globalUploadGuard.retryAfterSeconds,
+      })
+      return
+    }
     const id = randomUUID()
     const fileName = `${id}${ext}`
     const filePath = path.join(uploadDir, fileName)
-    await writeFile(filePath, buffer)
+    if (!await writeUploadWithinQuota(filePath, buffer)) {
+      sendJson(res, 507, { code: 'upload_storage_full', error: 'Product-image storage is temporarily full. Try again after older assets expire.' })
+      return
+    }
+    recordStoryUpload(ownerSessionId, uploadGuard)
+    recordGlobalStoryUpload(globalUploadGuard)
     const url = `${publicOrigin(req)}/uploads/${fileName}`
     sendJson(res, 200, {
       id,
       name,
       type,
       size: buffer.length,
+      width,
+      height: frameHeight,
       url,
     })
   } catch (error) {
@@ -3667,6 +4527,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/config') {
+    ensureStorySession(req, res)
     sendJson(res, 200, {
       dashboardUrl: process.env.RUKTER_DASHBOARD_URL || 'https://store-4.rukter.com/dashboard/theme',
       canonicalUrl: process.env.RUKTER_CANONICAL_URL || 'https://rukter.com',
@@ -3682,13 +4543,32 @@ const server = http.createServer(async (req, res) => {
       amdGpuAlwaysOn: amdGpuAlwaysOnEnabled,
       amdGpuCapacityState: process.env.AMD_GPU_CAPACITY_STATE || 'unknown',
       amdGpuAvailabilityReason: process.env.AMD_GPU_AVAILABILITY_REASON || '',
-      gpuZeroIdlePolicy: 'destroy_after_job',
+      gpuZeroIdlePolicy: amdGpuAlwaysOnEnabled ? 'disabled_for_persistent' : 'destroy_after_job',
       gpuPersistentPolicy: amdGpuAlwaysOnEnabled ? 'always_on_tagged_worker' : 'retain_tagged_worker',
+      amdGpuAutoShutdown: false,
+      amdGpuLifecycle: amdGpuAlwaysOnEnabled
+        ? 'Persistent AMD worker stays online before, during, and after Product Story jobs; credits continue while it is active.'
+        : 'Per-job GPU leases are released after rendering; automatic idle shutdown is not used.',
       amdGpuPersistentTag: process.env.AMD_GPU_PERSISTENT_TAG || 'rukter-product-story-persistent',
       gpuQueuePolicy: 'fifo',
       gpuQueueConcurrency: 1,
       gpuQueueCapacity: amdStoryQueueMaxSize,
       storyLimits: productStoryLimits,
+      storySessionReady: true,
+      storyApprovalRequiredForAmd: true,
+      storyApprovalTtlSeconds: Math.round(storyApprovalTtlMs / 1000),
+      storySessionCreateLimitPerMinute: storySessionCreateMax,
+      storySessionActiveLimit: storySessionActiveMax,
+      storySessionUploadLimitPerMinute: storySessionUploadMax,
+      storyClientCreateLimitPerMinute: storyClientCreateMax,
+      storyGlobalCreateLimitPerMinute: storyGlobalCreateMax,
+      storyGlobalActiveLimit: storyGlobalActiveMax,
+      storyPlanningActiveLimit: storyPlanningActiveMax,
+      storyClientUploadLimitPerMinute: storyClientUploadMax,
+      storyGlobalUploadLimitPerMinute: storyGlobalUploadMax,
+      storyUploadMaxPixels: maxUploadPixels,
+      storyUploadRetentionSeconds: Math.round(uploadRetentionMs / 1000),
+      storyUploadStorageMaxFiles: uploadStorageMaxFiles,
       visualCriticThreshold: 82,
       visualCriticRepairPasses: 2,
       criticRepairTokens,
@@ -3783,17 +4663,39 @@ const server = http.createServer(async (req, res) => {
 
   const storyJobMatch = url.pathname.match(/^\/api\/story-jobs\/([^/]+)$/)
   if (req.method === 'GET' && storyJobMatch) {
-    handleGetStoryJob(res, decodeURIComponent(storyJobMatch[1]))
+    handleGetStoryJob(req, res, decodeURIComponent(storyJobMatch[1]))
+    return
+  }
+
+  const approveStoryMatch = url.pathname.match(/^\/api\/story-jobs\/([^/]+)\/approve$/)
+  if (req.method === 'POST' && approveStoryMatch) {
+    const job = ownedStoryJob(req, res, decodeURIComponent(approveStoryMatch[1]))
+    if (!job) return
+    let approval = {}
+    try {
+      const rawBody = await readBody(req)
+      approval = rawBody ? JSON.parse(rawBody) : {}
+    } catch {
+      sendJson(res, 400, { code: 'invalid_approval_payload', error: 'AMD render approval must be valid JSON.' })
+      return
+    }
+    const result = approveStoryJob(job, cleanText(approval.expectedUpdatedAt, 80))
+    if (!result.ok) {
+      sendJson(res, result.status, {
+        code: result.code,
+        error: result.error,
+        ...(result.queue ? { queue: result.queue } : {}),
+      })
+      return
+    }
+    sendJson(res, result.status, publicStoryJob(job))
     return
   }
 
   const cancelStoryMatch = url.pathname.match(/^\/api\/story-jobs\/([^/]+)\/cancel$/)
   if (req.method === 'POST' && cancelStoryMatch) {
-    const job = storyJobs.get(decodeURIComponent(cancelStoryMatch[1]))
-    if (!job) {
-      sendJson(res, 404, { error: 'Product Story job not found.' })
-      return
-    }
+    const job = ownedStoryJob(req, res, decodeURIComponent(cancelStoryMatch[1]))
+    if (!job) return
     cancelStoryJob(job)
     sendJson(res, 202, publicStoryJob(job))
     return
@@ -3801,11 +4703,8 @@ const server = http.createServer(async (req, res) => {
 
   const releaseStoryMatch = url.pathname.match(/^\/api\/story-jobs\/([^/]+)\/release-gpu$/)
   if (req.method === 'POST' && releaseStoryMatch) {
-    const job = storyJobs.get(decodeURIComponent(releaseStoryMatch[1]))
-    if (!job) {
-      sendJson(res, 404, { error: 'Product Story job not found.' })
-      return
-    }
+    const job = ownedStoryJob(req, res, decodeURIComponent(releaseStoryMatch[1]))
+    if (!job) return
     try {
       await releaseStoryGpu(job)
       sendJson(res, 200, publicStoryJob(job))
@@ -3856,6 +4755,16 @@ const server = http.createServer(async (req, res) => {
 server.listen(port, () => {
   console.log(`Rukter.ai Launch Agent running at http://localhost:${port}`)
 })
+
+setInterval(pruneStoryJobs, 60_000).unref()
+
+const pruneUploads = () => pruneStaleUploads()
+  .then((result) => {
+    if (result.removed) console.log(`Removed ${result.removed} expired Product Story upload(s).`)
+  })
+  .catch((error) => console.error(`Product Story upload cleanup failed: ${error instanceof Error ? error.message : String(error)}`))
+setTimeout(pruneUploads, 10_000).unref()
+setInterval(pruneUploads, 60 * 60_000).unref()
 
 if (gpuLeaseOrchestrator) {
   let persistentEnsureInFlight = null

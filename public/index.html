@@ -6,7 +6,7 @@
     <title>Rukter.ai - Product Story Director</title>
     <meta name="description" content="Turn product photos into a directed product story with visible AI activity and always-on AMD GPU compute.">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Arial' font-size='18' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/styles.css?v=20260713render1">
+    <link rel="stylesheet" href="/styles.css?v=20260713review1">
   </head>
   <body data-view="upload">
     <header class="app-header">
@@ -76,12 +76,12 @@
             <div class="mode-selector" role="radiogroup" aria-label="Generation mode">
               <label class="mode-option">
                 <input type="radio" name="storyMode" value="fast_story" checked>
-                <span><strong>Motion Preview</strong><small>Source-photo animation · no GPU cost</small></span>
+                <span><strong>Motion Preview</strong><small>Source-photo animation · browser only</small></span>
                 <i>Ready</i>
               </label>
               <label id="amdModeOption" class="mode-option">
                 <input id="amdModeInput" type="radio" name="storyMode" value="amd_cinematic">
-                <span><strong>AMD Cinematic</strong><small>Wan 2.2 multi-clip filmmaking · GPU per job</small></span>
+                <span><strong>AMD Cinematic</strong><small>Wan 2.2 multi-clip filmmaking · persistent MI300X</small></span>
                 <i id="amdModeState">Checking</i>
               </label>
             </div>
@@ -108,7 +108,7 @@
             </fieldset>
             <button id="capacityButton" class="capacity-button" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6"/></svg>
-              <span><strong>Check AMD capacity</strong><small>Live check only · no GPU billing</small></span>
+              <span><strong>Check AMD capacity</strong><small>Read-only worker check · credits continue while online</small></span>
               <i id="capacityState">Check now</i>
             </button>
             <div class="direction-fields">
@@ -116,6 +116,15 @@
               <label><span>Length</span><select id="durationSeconds"><option value="8" selected>8 sec · fastest</option><option value="12">12 sec · balanced</option><option value="15">15 sec · full story</option><option value="20">20 sec · longest</option></select></label>
               <label><span>Resolution</span><select id="renderResolution"><option value="fast" selected>Fast · 384 × 672</option><option value="standard">Standard · 544 × 960</option><option value="detail">Detail · 640 × 1120</option></select></label>
             </div>
+            <fieldset class="director-fieldset">
+              <legend>Creative intent</legend>
+              <div class="direction-fields director-policy-fields">
+                <label><span>Campaign goal</span><select id="campaignGoal"><option value="product_launch" selected>Product launch</option><option value="conversion_ad">Conversion ad</option><option value="product_detail">Product detail</option><option value="brand_story">Brand story</option><option value="social_hook">Social hook</option></select></label>
+                <label><span>Scene policy</span><select id="scenePolicy"><option value="ai_recommend" selected>AI recommends</option><option value="studio_packshot">Studio packshot</option><option value="lifestyle_context">Lifestyle context</option><option value="material_macro">Material macro</option><option value="use_case_demo">Use-case demo</option></select></label>
+                <label><span>People</span><select id="peoplePolicy"><option value="no_people" selected>No people</option><option value="allow_people_no_contact">People, background only</option><option value="ai_recommend">AI recommends</option></select></label>
+              </div>
+              <p class="director-help">Fireworks uses these policies to propose Product DNA and directed shots. AMD rendering begins only after your review and approval.</p>
+            </fieldset>
             <details class="optional-context">
               <summary>Optional product facts</summary>
               <textarea id="brief" rows="3" placeholder="Add only price, materials, ingredients or claims the photos cannot show."></textarea>
@@ -126,16 +135,43 @@
             <span>Direct Product Story</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5"/></svg>
           </button>
-          <p id="computeNote" class="compute-note">AMD compute starts only for an AMD Cinematic job and is destroyed after completion.</p>
+          <p id="computeNote" class="compute-note">AMD rendering starts only after direction approval. The persistent worker stays online and credits continue while it is active.</p>
         </div>
       </section>
 
       <section id="studioView" class="studio-view" hidden aria-label="Product Story workspace">
+        <button id="mobileJobBar" class="mobile-job-bar" type="button" hidden aria-label="Show job and billing details">
+          <span><i></i><strong id="mobileJobStatus">Queued</strong></span>
+          <span id="mobileQueueStatus">Queue preparing</span>
+          <span id="mobileBillingStatus">Always-on GPU · credits continue</span>
+        </button>
         <aside class="activity-panel">
           <div class="panel-heading">
             <div><p class="eyebrow">Live job</p><h1>Activity</h1></div>
             <time id="elapsedTime">00:00</time>
           </div>
+          <section id="approvalReview" class="approval-review" hidden aria-labelledby="approvalTitle">
+            <div class="approval-review-head">
+              <div><span>Review gate</span><h2 id="approvalTitle">Approve the direction</h2></div>
+              <strong>Render not started</strong>
+            </div>
+            <p class="approval-intro">Fireworks has prepared Product DNA and directed shots. Confirm the identity and scene policy before AMD compute begins.</p>
+            <dl id="approvalDirectionFacts" class="approval-direction-facts"></dl>
+            <div class="approval-block">
+              <h3>Product DNA</h3>
+              <strong id="productDnaType">Product</strong>
+              <p id="productDnaSummary">Waiting for product analysis.</p>
+              <ul id="productDnaDetails"></ul>
+              <div id="productDnaReview" class="product-dna-review" hidden><b>Seller verification needed</b><ul></ul></div>
+            </div>
+            <div class="approval-block">
+              <h3>Directed shots</h3>
+              <ol id="directedShotReview" class="directed-shot-review"></ol>
+            </div>
+            <label class="approval-check"><input id="approvalAcknowledgement" type="checkbox"><span>I reviewed the product identity, scene policy and directed shots.</span></label>
+            <button id="approveAmdButton" class="approve-amd-button" type="button" disabled>Approve AMD render</button>
+            <p id="approvalStatus" class="approval-status" role="status">No render has started; the persistent worker remains online and credits continue.</p>
+          </section>
           <ol id="activityList" class="activity-list"></ol>
           <div id="jobWarning" class="job-warning" hidden></div>
           <button id="cancelJobButton" class="secondary-button" type="button">Cancel job</button>
@@ -169,7 +205,7 @@
           <div id="timeline" class="timeline" aria-label="Story timeline"></div>
         </section>
 
-        <aside class="job-panel">
+        <aside id="jobPanel" class="job-panel">
           <div class="panel-heading dark">
             <div><p class="eyebrow">Runtime</p><h1>Job status</h1></div>
             <span id="jobId">—</span>
@@ -181,15 +217,20 @@
             <div><dt>Worker</dt><dd id="workerState">Browser</dd></div>
             <div><dt>AMD GPU</dt><dd id="gpuState">Offline</dd></div>
             <div><dt>ROCm now</dt><dd id="gpuLoadState">No sample</dd></div>
-            <div><dt>Billing</dt><dd id="billingState" class="safe">Inactive</dd></div>
-            <div><dt>Release policy</dt><dd id="releasePolicyState">Destroy after job</dd></div>
+            <div><dt>Billing</dt><dd id="billingState" class="active">Always-on</dd></div>
+            <div><dt>Worker lifecycle</dt><dd id="releasePolicyState">Always-on</dd></div>
             <div><dt>Output</dt><dd id="outputState">Waiting</dd></div>
           </dl>
           <section class="identity-guard">
             <span class="guard-icon">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.6 2.8 8.5 7 10 4.2-1.5 7-5.4 7-10V6zM9 12l2 2 4-5"/></svg>
             </span>
-            <div><strong>Product identity guard</strong><p>Source pixels, packaging text and logos stay unchanged.</p></div>
+            <div><strong>Product identity checks</strong><p>Generated shots are checked for visual similarity and OCR retention where applicable. Seller review is required before use.</p></div>
+          </section>
+          <section id="identityEvidence" class="identity-evidence" hidden aria-labelledby="identityEvidenceTitle">
+            <div class="identity-evidence-head"><strong id="identityEvidenceTitle">Identity evidence</strong><span id="identityEvidenceState">Review required</span></div>
+            <p id="identityEvidenceSummary">Evidence appears after generated output is checked.</p>
+            <div id="identityEvidenceShots" class="identity-evidence-shots"></div>
           </section>
           <div class="job-actions">
             <button id="exportVideoButton" class="primary-button" type="button" disabled>
@@ -197,7 +238,6 @@
               <span>Export preview video</span>
             </button>
             <button id="exportStoryboardButton" class="secondary-dark-button" type="button" disabled>Export storyboard</button>
-            <button id="releaseGpuButton" class="release-button" type="button" disabled>Release GPU now</button>
           </div>
           <p id="exportStatus" class="export-status">The browser export preserves the uploaded product photos.</p>
         </aside>
@@ -205,6 +245,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" hidden></div>
-    <script type="module" src="/app.js?v=20260713render1"></script>
+    <script type="module" src="/app.js?v=20260713review1"></script>
   </body>
 </html>

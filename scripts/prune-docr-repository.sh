@@ -91,7 +91,7 @@ wait_for_gc() {
         echo "DOCR garbage collection ${gc_uuid} succeeded and freed ${freed_bytes:-0} bytes."
         return 0
         ;;
-      requested|'waiting for write JWTs to expire'|'scanning manifests'|'deleting unreferenced blobs'|'')
+      requested|'waiting for write JWTs to expire'|'scanning manifests'|'scanning for unreferenced blobs'|'deleting unreferenced blobs'|'')
         if (( attempt % 6 == 0 )); then
           echo "DOCR garbage collection is ${gc_state:-pending} (${attempt}/120)."
         fi

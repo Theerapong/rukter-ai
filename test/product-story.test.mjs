@@ -198,6 +198,17 @@ test('shows privacy-safe AMD queue details from the runtime badge', () => {
   assert.match(serverSource, /other job ids and user details are not exposed/)
 })
 
+test('labels ROCm telemetry as an instant worker sample, not an AMD Insights chart', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  assert.match(htmlSource, />ROCm now</)
+  assert.match(appSource, /compute now/)
+  assert.match(appSource, /VRAM now/)
+  assert.match(appSource, /Instant ROCm worker sample from rocm-smi/)
+  assert.match(appSource, /AMD DevCloud Insights charts are averaged/)
+  assert.match(appSource, /\['ROCm now', friendlyGpuLoad/)
+})
+
 test('waits for the live AMD queue to become idle before production deploy', () => {
   const ciSource = readFileSync(new URL('../.gitlab-ci.yml', import.meta.url), 'utf8')
   const waitScript = readFileSync(new URL('../scripts/wait-live-amd-queue-idle.sh', import.meta.url), 'utf8')

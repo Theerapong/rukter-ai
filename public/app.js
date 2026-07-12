@@ -70,6 +70,7 @@ const renderResolutionOptions = {
   standard: { label: 'Standard', dimensions: { '9:16': [544, 960], '1:1': [544, 544], '16:9': [960, 544] } },
   detail: { label: 'Detail', dimensions: { '9:16': [640, 1120], '1:1': [640, 640], '16:9': [1120, 640] } },
 }
+const gpuTelemetryHelpText = 'Instant ROCm worker sample from rocm-smi. AMD DevCloud Insights charts are averaged and display memory, compute, power, and temperature as separate graphs.'
 
 let config = {}
 let sources = []
@@ -662,9 +663,9 @@ function friendlyQueue(queue) {
 function friendlyGpuLoad(telemetry) {
   if (!telemetry?.available) return 'No sample'
   const values = []
-  if (Number.isFinite(telemetry.utilizationPct)) values.push(`${Math.round(telemetry.utilizationPct)}% compute`)
-  if (Number.isFinite(telemetry.vramPct)) values.push(`${Math.round(telemetry.vramPct)}% VRAM`)
-  if (Number.isFinite(telemetry.powerWatts)) values.push(`${Math.round(telemetry.powerWatts)} W`)
+  if (Number.isFinite(telemetry.utilizationPct)) values.push(`${Math.round(telemetry.utilizationPct)}% compute now`)
+  if (Number.isFinite(telemetry.vramPct)) values.push(`${Math.round(telemetry.vramPct)}% VRAM now`)
+  if (Number.isFinite(telemetry.powerWatts)) values.push(`${Math.round(telemetry.powerWatts)} W now`)
   return values.join(' · ') || 'Sampled'
 }
 
@@ -734,7 +735,7 @@ function queueDetailRows(job = currentJob, snapshot = queueSnapshot) {
   }
   rows.push(['GPU billing', billingDetail(job)])
   rows.push(['AMD GPU', job.effectiveMode === 'amd_cinematic' ? (job.gpu?.device || job.gpu?.status || 'Not started') : 'Not used'])
-  if (job.gpu?.telemetry?.available) rows.push(['GPU load', friendlyGpuLoad(job.gpu.telemetry)])
+  if (job.gpu?.telemetry?.available) rows.push(['ROCm now', friendlyGpuLoad(job.gpu.telemetry)])
   if (Number(queue.waitMs) > 0) rows.push(['Wait time', formatDurationMs(queue.waitMs)])
   if (queue.enqueuedAt) rows.push(['Enqueued', formatClock(queue.enqueuedAt)])
   if (queue.startedAt) rows.push(['Slot started', formatClock(queue.startedAt)])
@@ -851,6 +852,7 @@ function renderJob(job) {
   gpuLoadState.textContent = waitingForGpu || job.effectiveMode !== 'amd_cinematic'
     ? 'No sample'
     : friendlyGpuLoad(job.gpu?.telemetry)
+  gpuLoadState.title = job.gpu?.telemetry?.available ? gpuTelemetryHelpText : ''
   const gpuBillingActive = job.gpu?.billing === 'active_for_job'
   const gpuBillingPersistent = job.gpu?.billing === 'persistent_active' || job.gpu?.releasePolicy === 'retain_after_job'
   const gpuBillingUncertain = job.gpu?.billing === 'possibly_active'

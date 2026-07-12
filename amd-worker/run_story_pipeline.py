@@ -28,6 +28,15 @@ IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
 IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD", "0.90"))
 OCR_RETENTION_THRESHOLD = float(os.getenv("WAN_OCR_RETENTION_THRESHOLD", "0.15"))
 OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
+IDENTITY_RETRY_PROMPT = (
+    " Product identity lock: preserve the exact source product silhouette, shell pattern, wheels, handles, "
+    "logos, packaging text, colors, and proportions. Use minimal camera motion. Do not morph, replace, "
+    "redesign, relabel, or remove any visible product feature."
+)
+IDENTITY_RETRY_NEGATIVE = (
+    " changed product identity, warped logo, missing text, unreadable text, different luggage, missing wheels, "
+    "altered handles, changed shell pattern, product morphing, extra objects"
+)
 
 
 def positive_env_int(name: str, default: int) -> int:
@@ -39,6 +48,7 @@ def positive_env_int(name: str, default: int) -> int:
 
 OUTPUT_RETENTION_MAX_JOBS = positive_env_int("OUTPUT_RETENTION_MAX_JOBS", 4)
 OUTPUT_RETENTION_MAX_AGE_SECONDS = positive_env_int("OUTPUT_RETENTION_MAX_AGE_SECONDS", 6 * 60 * 60)
+IDENTITY_RETRY_ATTEMPTS = positive_env_int("WAN_IDENTITY_RETRY_ATTEMPTS", 2)
 
 
 def cleanup_output_directories(preserve: Path | None = None) -> None:
@@ -62,7 +72,7 @@ def cleanup_output_directories(preserve: Path | None = None) -> None:
             continue
 
 
-def report_progress(progress: int, detail: str, stage: str, context: dict | None = None) -> None:
+def report_progress(progress: float, detail: str, stage: str, context: dict | None = None) -> None:
     payload = {"progress": progress, "detail": detail, "stage": stage}
     if context:
         payload["context"] = context
@@ -224,10 +234,10 @@ def main() -> None:
     cleanup_output_directories(preserve=output_directory)
 
     for index, shot in enumerate(shots):
-        shot_start = 20 + round(index * 68 / total_shots)
+        shot_start = 20 + (index * 68 / total_shots)
         prompt_excerpt = str(shot.get("cinematicPrompt", ""))[:180]
         report_progress(
-            shot_start,
+            round(shot_start, 1),
             f"Generating text-guided video shot {index + 1} of {total_shots} on AMD GPU",
             "video_generation",
             {"shot": index + 1, "totalShots": total_shots, "prompt": prompt_excerpt},
@@ -235,33 +245,65 @@ def main() -> None:
         source = resize_cover(load_source(shot["sourceUrl"]), width, height)
         duration = max(3, min(5, int(shot.get("generation", {}).get("durationSeconds", 3))))
         num_frames = wan_frame_count(duration)
-        generator = torch.Generator(device="cuda").manual_seed(4100 + index)
-        result = pipe(
-            image=source,
-            prompt=shot["cinematicPrompt"],
-            negative_prompt=shot["negativePrompt"],
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            num_inference_steps=INFERENCE_STEPS,
-            guidance_scale=5.0,
-            generator=generator,
-        )
-        frames = [frame_to_image(frame) for frame in result.frames[0]]
-        generated_frame_counts.append(len(frames))
-        clip_path = output_directory / f"shot-{index + 1}.mp4"
-        export_to_video(frames, str(clip_path), fps=FPS, quality=9)
-        report_progress(
-            shot_start + round(54 / total_shots),
-            f"Comparing generated shot {index + 1} with the source product using CLIP and OCR",
-            "identity_check",
-            {"shot": index + 1, "totalShots": total_shots},
-        )
-        shot_evidence = identity_evidence(source, frames, clip_model, clip_processor)
-        evidence.append({"id": shot.get("id", f"shot-{index + 1}"), "clipUrl": "", **shot_evidence})
-        if not shot_evidence["identityVerified"]:
-            raise RuntimeError(f"Product identity verification failed for shot {index + 1}: {shot_evidence}")
-        clips.append(clip_path)
+        last_evidence = None
+        verified_frames = None
+        verified_clip_path = None
+        for attempt in range(IDENTITY_RETRY_ATTEMPTS):
+            retrying = attempt > 0
+            if retrying:
+                report_progress(
+                    round(min(91.5, shot_start + (attempt * 6 / max(1, total_shots))), 1),
+                    f"Retrying shot {index + 1} with stricter product identity lock",
+                    "video_generation",
+                    {"shot": index + 1, "totalShots": total_shots, "attempt": attempt + 1, "maxAttempts": IDENTITY_RETRY_ATTEMPTS},
+                )
+            prompt = str(shot["cinematicPrompt"]) + (IDENTITY_RETRY_PROMPT if retrying else "")
+            negative_prompt = str(shot["negativePrompt"]) + (IDENTITY_RETRY_NEGATIVE if retrying else "")
+            generator = torch.Generator(device="cuda").manual_seed(4100 + index + attempt * 997)
+            result = pipe(
+                image=source,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                num_inference_steps=INFERENCE_STEPS,
+                guidance_scale=4.4 if retrying else 5.0,
+                generator=generator,
+            )
+            frames = [frame_to_image(frame) for frame in result.frames[0]]
+            clip_path = output_directory / f"shot-{index + 1}.mp4"
+            export_to_video(frames, str(clip_path), fps=FPS, quality=9)
+            report_progress(
+                round(shot_start + (54 / total_shots), 1),
+                f"Comparing generated shot {index + 1} with the source product using CLIP and OCR",
+                "identity_check",
+                {"shot": index + 1, "totalShots": total_shots, "attempt": attempt + 1, "maxAttempts": IDENTITY_RETRY_ATTEMPTS},
+            )
+            shot_evidence = {
+                "id": shot.get("id", f"shot-{index + 1}"),
+                "clipUrl": "",
+                "attempt": attempt + 1,
+                "maxAttempts": IDENTITY_RETRY_ATTEMPTS,
+                **identity_evidence(source, frames, clip_model, clip_processor),
+            }
+            last_evidence = shot_evidence
+            if shot_evidence["identityVerified"]:
+                verified_frames = frames
+                verified_clip_path = clip_path
+                break
+            if attempt < IDENTITY_RETRY_ATTEMPTS - 1:
+                report_progress(
+                    round(min(91.5, shot_start + (60 / total_shots)), 1),
+                    f"Identity check rejected shot {index + 1}; retrying before failing the job",
+                    "identity_check",
+                    {"shot": index + 1, "totalShots": total_shots, "attempt": attempt + 1, "maxAttempts": IDENTITY_RETRY_ATTEMPTS},
+                )
+        if not last_evidence or not last_evidence["identityVerified"] or verified_frames is None or verified_clip_path is None:
+            raise RuntimeError(f"Product identity verification failed for shot {index + 1}: {last_evidence}")
+        evidence.append(last_evidence)
+        generated_frame_counts.append(len(verified_frames))
+        clips.append(verified_clip_path)
 
     final_path = output_directory / "story.mp4"
     report_progress(92, "Composing verified Wan 2.2 shots into the final MP4", "video_composition")

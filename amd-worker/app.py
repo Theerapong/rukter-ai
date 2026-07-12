@@ -99,7 +99,7 @@ async def collect_process_stream(stream, job: dict, parse_progress: bool = False
                 if job.get("status") in TERMINAL_JOB_STATUSES or job.get("status") == "cancelling":
                     continue
                 job.update(
-                    progress=max(0, min(100, int(progress.get("progress", job.get("progress", 0))))),
+                    progress=max(0.0, min(100.0, float(progress.get("progress", job.get("progress", 0))))),
                     detail=str(progress.get("detail", "Running Product Story pipeline on AMD GPU"))[:240],
                     stage=str(progress.get("stage", job.get("stage", "video_generation")))[:80],
                     context=progress.get("context") if isinstance(progress.get("context"), dict) else job.get("context"),

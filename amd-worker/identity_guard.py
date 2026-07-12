@@ -167,6 +167,17 @@ def _token_overlaps_product(token: OcrToken, product_mask: np.ndarray) -> bool:
     return bool(product_mask[center_y, center_x]) or float(crop.mean()) >= PRODUCT_TOKEN_OVERLAP_MIN
 
 
+def requires_ocr_retention(
+    source_token_count: int,
+    clip_similarity_min: float,
+    clip_fallback_threshold: float,
+    min_source_tokens: int,
+) -> bool:
+    if source_token_count < max(1, min_source_tokens):
+        return False
+    return clip_similarity_min < clip_fallback_threshold
+
+
 def product_ocr_evidence(image: Image.Image, tokens: list[OcrToken] | None = None) -> dict:
     ocr_tokens = tokens if tokens is not None else ocr_tokens_from_image(image)
     product_mask = product_foreground_mask(image)

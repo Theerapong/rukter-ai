@@ -15,7 +15,7 @@ import torch
 from PIL import Image
 from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
 from diffusers.utils import export_to_video
-from identity_guard import product_ocr_evidence
+from identity_guard import product_ocr_evidence, requires_ocr_retention
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -49,6 +49,7 @@ def positive_env_int(name: str, default: int) -> int:
 OUTPUT_RETENTION_MAX_JOBS = positive_env_int("OUTPUT_RETENTION_MAX_JOBS", 4)
 OUTPUT_RETENTION_MAX_AGE_SECONDS = positive_env_int("OUTPUT_RETENTION_MAX_AGE_SECONDS", 6 * 60 * 60)
 IDENTITY_RETRY_ATTEMPTS = positive_env_int("WAN_IDENTITY_RETRY_ATTEMPTS", 2)
+OCR_RETENTION_MIN_TOKENS = positive_env_int("WAN_OCR_RETENTION_MIN_TOKENS", 2)
 
 
 def cleanup_output_directories(preserve: Path | None = None) -> None:
@@ -145,18 +146,34 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
     sampled_tokens = [sample["productTokens"] for sample in sampled_ocr]
     retention = 1.0 if not source_tokens else min(len(source_tokens & tokens) / len(source_tokens) for tokens in sampled_tokens)
     clip_similarity_min = min(similarities)
-    ocr_retention_required = bool(source_tokens) and clip_similarity_min < IDENTITY_CLIP_FALLBACK_THRESHOLD
+    source_token_count = len(source_tokens)
+    ocr_retention_required = requires_ocr_retention(
+        source_token_count,
+        clip_similarity_min,
+        IDENTITY_CLIP_FALLBACK_THRESHOLD,
+        OCR_RETENTION_MIN_TOKENS,
+    )
+    if not source_tokens:
+        ocr_retention_reason = "no_source_ocr"
+    elif source_token_count < OCR_RETENTION_MIN_TOKENS:
+        ocr_retention_reason = "insufficient_source_ocr_tokens"
+    elif ocr_retention_required:
+        ocr_retention_reason = "required_below_clip_fallback"
+    else:
+        ocr_retention_reason = "clip_similarity_fallback"
     verified = clip_similarity_min >= IDENTITY_THRESHOLD and (not ocr_retention_required or retention >= OCR_RETENTION_THRESHOLD)
     return {
         "identityVerified": verified,
         "clipSimilarityMin": round(clip_similarity_min, 4),
         "clipSimilaritySamples": [round(value, 4) for value in similarities],
-        "sourceOcrTokenCount": len(source_tokens),
+        "sourceOcrTokenCount": source_token_count,
         "sourceAnnotationOcrTokenCount": source_ocr["annotationTokenCount"],
         "ocrEvidenceMode": source_ocr["mode"],
         "ocrRetentionMin": round(retention, 4),
         "ocrRetentionRequired": ocr_retention_required,
         "ocrRetentionThreshold": OCR_RETENTION_THRESHOLD,
+        "ocrRetentionMinTokens": OCR_RETENTION_MIN_TOKENS,
+        "ocrRetentionReason": ocr_retention_reason,
         "clipFallbackThreshold": IDENTITY_CLIP_FALLBACK_THRESHOLD,
         "threshold": IDENTITY_THRESHOLD,
     }

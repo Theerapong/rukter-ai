@@ -65,6 +65,23 @@ print(json.dumps({
   assert.equal(result.mode, 'product_surface')
 })
 
+test('does not hard-gate identity on a single OCR token', { skip: skipReason }, () => {
+  const result = runIdentityGuard(`
+import json, sys
+sys.path.insert(0, 'amd-worker')
+from identity_guard import requires_ocr_retention
+
+print(json.dumps({
+    'singleToken': requires_ocr_retention(1, 0.7637, 0.90, 2),
+    'twoTokens': requires_ocr_retention(2, 0.7637, 0.90, 2),
+    'clipFallback': requires_ocr_retention(3, 0.95, 0.90, 2),
+}))
+`)
+  assert.equal(result.singleToken, false)
+  assert.equal(result.twoTokens, true)
+  assert.equal(result.clipFallback, false)
+})
+
 test('ships the identity guard helper through every AMD worker bootstrap path', () => {
   const dockerfile = readFileSync(path.join(repoRoot, 'amd-worker', 'Dockerfile'), 'utf8')
   const bootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')

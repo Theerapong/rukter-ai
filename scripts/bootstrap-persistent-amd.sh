@@ -78,6 +78,7 @@ trap 'rm -f "${environment_file}"' EXIT
   printf 'WAN_MODEL_ID=Wan-AI/Wan2.2-TI2V-5B-Diffusers\n'
   printf 'WAN_IDENTITY_THRESHOLD=0.42\n'
   printf 'WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD=0.90\n'
+  printf 'WAN_OCR_RETENTION_MIN_TOKENS=2\n'
   printf 'WAN_FPS=16\n'
   printf 'WAN_NUM_FRAMES=81\n'
   printf 'WAN_INFERENCE_STEPS=16\n'

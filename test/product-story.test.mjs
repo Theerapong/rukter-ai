@@ -129,6 +129,18 @@ test('keeps Activity trace details collapsed until the user expands them', () =>
   assert.doesNotMatch(appSource, /new Set\(\[['"]vision_analysis/)
 })
 
+test('does not ask sellers to specify a market in the frontend', () => {
+  const storyHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  const storySource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const twinHtml = readFileSync(new URL('../public/product-twin.html', import.meta.url), 'utf8')
+  const twinSource = readFileSync(new URL('../public/product-twin.js', import.meta.url), 'utf8')
+  for (const source of [storyHtml, storySource, twinHtml, twinSource]) {
+    assert.doesNotMatch(source, /id=["']market["']/)
+    assert.doesNotMatch(source, />Market</)
+    assert.doesNotMatch(source, /market:\s*market/)
+  }
+})
+
 test('builds a truthful Fireworks trace with observations and directed video prompts', () => {
   const plan = buildProductStoryPlan({
     request: { mode: 'amd_cinematic', sourceImages: sources },

@@ -38,7 +38,6 @@ const notesDialog = $('#notesDialog')
 const notesButton = $('#notesButton')
 const brief = $('#brief')
 const channel = $('#channel')
-const market = $('#market')
 const toast = $('#toast')
 
 const maxImageBytes = 4_000_000
@@ -685,7 +684,6 @@ async function buildFromFiles(fileList) {
     const input = {
       brief: brief.value.trim(),
       channel: channel.value,
-      market: market.value.trim() || 'Thailand and Southeast Asia',
       productImage: { ...uploaded[0], dataUrl: preparedSources[0].dataUrl },
       sourceImages: uploaded,
       capture: prepared.capture,

@@ -18,7 +18,6 @@ const amdModeInput = $('#amdModeInput')
 const amdModeOption = $('#amdModeOption')
 const computeNote = $('#computeNote')
 const aspect = $('#aspect')
-const market = $('#market')
 const brief = $('#brief')
 const storyStyleState = $('#storyStyleState')
 const activityList = $('#activityList')
@@ -742,7 +741,6 @@ async function createStory() {
       durationSeconds: 15,
       brief: brief.value,
       channel: 'DTC',
-      market: market.value,
       productImage: { ...uploaded[0], dataUrl: sources[0].dataUrl },
       sourceImages: uploaded,
     }

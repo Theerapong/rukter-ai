@@ -79,7 +79,7 @@ trap 'rm -f "${environment_file}"' EXIT
   printf 'WAN_IDENTITY_THRESHOLD=0.42\n'
   printf 'WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD=0.90\n'
   printf 'WAN_FPS=16\n'
-  printf 'WAN_NUM_FRAMES=49\n'
+  printf 'WAN_NUM_FRAMES=81\n'
   printf 'WAN_INFERENCE_STEPS=16\n'
   printf 'ROCM_WORKER_IMAGE=rocm/pytorch:latest\n'
   printf 'PORT=8080\n'

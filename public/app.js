@@ -114,7 +114,9 @@ function renderCapacity(capacity = config) {
   const available = state === 'available' && (capacity.available ?? true)
   const requestable = state === 'requestable' || capacity.requestable === true
   const publicEnabled = capacity.publicEnabled ?? capacity.amdGpuPublicEnabled ?? false
-  const persistent = capacity.persistentLease === true || capacity.lifecycle === 'persistent'
+  const persistent = capacity.persistentLease === true
+    || capacity.lifecycle === 'persistent'
+    || capacity.amdGpuPersistent === true
   const canStart = (available || requestable) && publicEnabled
   const canQueue = publicEnabled
   const reason = capacity.reason || capacity.amdGpuAvailabilityReason || ''
@@ -575,8 +577,16 @@ function renderJob(job) {
       if (!storyImage.src) showShot(0, false)
     }
   }
-  if (waitingForGpu) {
+  if (gpuBillingPersistent && !ready) {
+    exportStatus.textContent = waitingForGpu
+      ? 'The persistent MI300X remains online while this job waits. AMD credits continue.'
+      : terminalStates.has(job.status)
+        ? 'This job ended. The persistent MI300X remains online for testing; AMD credits continue.'
+        : 'The persistent MI300X is rendering this job and will remain online afterward. AMD credits continue.'
+  } else if (waitingForGpu) {
     exportStatus.textContent = job.queue?.note || 'Waiting in FIFO order. GPU billing has not started.'
+  } else if (gpuBillingActive && !ready) {
+    exportStatus.textContent = 'The AMD GPU is rendering this job. Per-job billing is active until the lease is released.'
   }
   if (ready) exportStatus.textContent = job.output?.videoUrl
     ? gpuBillingPersistent

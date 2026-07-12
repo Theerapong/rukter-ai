@@ -21,7 +21,7 @@ from transformers import CLIPModel, CLIPProcessor
 
 
 FPS = int(os.getenv("WAN_FPS", "16"))
-NUM_FRAMES = int(os.getenv("WAN_NUM_FRAMES", "49"))
+MAX_NUM_FRAMES = int(os.getenv("WAN_NUM_FRAMES", "81"))
 INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "16"))
 MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
@@ -152,17 +152,22 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
     }
 
 
-def compose(clips: list[Path], output_path: Path) -> None:
+def wan_frame_count(duration_seconds: int) -> int:
+    maximum = max(17, min(81, ((MAX_NUM_FRAMES - 1) // 4) * 4 + 1))
+    requested = ((max(1, duration_seconds) * FPS + 3) // 4) * 4 + 1
+    return max(17, min(maximum, requested))
+
+
+def compose(clips: list[Path], output_path: Path, duration_seconds: float) -> None:
     concat_path = output_path.with_suffix(".txt")
     concat_path.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8")
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path),
-            "-vf", "eq=contrast=1.05:saturation=1.08,format=yuv420p",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-movflags", "+faststart", str(output_path),
-        ],
-        check=True,
-    )
+    command = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path),
+        "-vf", "eq=contrast=1.05:saturation=1.08,format=yuv420p",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-movflags", "+faststart",
+        "-t", f"{duration_seconds:.3f}", str(output_path),
+    ]
+    subprocess.run(command, check=True)
 
 
 def upload_video(video_path: Path, job_id: str) -> str:
@@ -212,6 +217,7 @@ def main() -> None:
 
     evidence = []
     clips = []
+    generated_frame_counts = []
     job_id = hashlib.sha256(input_path.read_bytes()).hexdigest()[:20]
     output_directory = OUTPUT_ROOT / job_id
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -228,7 +234,7 @@ def main() -> None:
         )
         source = resize_cover(load_source(shot["sourceUrl"]), width, height)
         duration = max(3, min(5, int(shot.get("generation", {}).get("durationSeconds", 3))))
-        num_frames = max(17, min(81, ((NUM_FRAMES - 1) // 4) * 4 + 1))
+        num_frames = wan_frame_count(duration)
         generator = torch.Generator(device="cuda").manual_seed(4100 + index)
         result = pipe(
             image=source,
@@ -242,6 +248,7 @@ def main() -> None:
             generator=generator,
         )
         frames = [frame_to_image(frame) for frame in result.frames[0]]
+        generated_frame_counts.append(len(frames))
         clip_path = output_directory / f"shot-{index + 1}.mp4"
         export_to_video(frames, str(clip_path), fps=FPS, quality=9)
         report_progress(
@@ -258,7 +265,10 @@ def main() -> None:
 
     final_path = output_directory / "story.mp4"
     report_progress(92, "Composing verified Wan 2.2 shots into the final MP4", "video_composition")
-    compose(clips, final_path)
+    generated_duration_seconds = sum(generated_frame_counts) / FPS
+    requested_duration_seconds = max(1.0, float(story.get("durationSeconds", generated_duration_seconds)))
+    output_duration_seconds = min(requested_duration_seconds, generated_duration_seconds)
+    compose(clips, final_path, output_duration_seconds)
     report_progress(97, "Uploading the final MP4 before releasing the AMD GPU", "output_upload")
     video_url = upload_video(final_path, job_id)
     result = {
@@ -266,14 +276,15 @@ def main() -> None:
         "format": "video/mp4",
         "width": width,
         "height": height,
-        "durationSeconds": sum(max(3, min(5, int(shot.get("generation", {}).get("durationSeconds", 3)))) for shot in shots),
+        "durationSeconds": output_duration_seconds,
         "evidence": {
             "identityVerified": all(item["identityVerified"] for item in evidence),
             "shotCount": len(evidence),
             "method": "Wan 2.2 TI2V plus CLIP similarity and OCR retention",
             "model": MODEL_ID,
             "fps": FPS,
-            "numFramesPerShot": NUM_FRAMES,
+            "numFramesPerShot": generated_frame_counts[0],
+            "generatedFrameCounts": generated_frame_counts,
             "inferenceSteps": INFERENCE_STEPS,
             "shots": evidence,
         },

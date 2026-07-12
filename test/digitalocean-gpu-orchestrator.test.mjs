@@ -21,7 +21,9 @@ test('builds cloud-init without placing the worker token in shell commands', () 
   assert.match(cloudInit, /bootstrap\.sh/)
   const encodedEnvironment = cloudInit.match(/content: (\S+)/)?.[1]
   assert.ok(encodedEnvironment)
-  assert.match(Buffer.from(encodedEnvironment, 'base64').toString('utf8'), /ROCM_WORKER_IMAGE=rocm:latest/)
+  const environment = Buffer.from(encodedEnvironment, 'base64').toString('utf8')
+  assert.match(environment, /ROCM_WORKER_IMAGE=rocm\/pytorch:latest/)
+  assert.match(environment, /WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD=0\.90/)
 })
 
 test('validates an AMD GPU lease request without creating a billed Droplet', async () => {

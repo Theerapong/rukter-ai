@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytesseract
 import requests
 import torch
@@ -23,6 +24,21 @@ INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "16"))
 MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
+
+
+def frame_to_image(frame) -> Image.Image:
+    if isinstance(frame, Image.Image):
+        return frame.convert("RGB")
+    array = np.asarray(frame)
+    if array.ndim != 3 or array.shape[-1] not in (3, 4):
+        raise RuntimeError(f"Unsupported generated frame shape: {array.shape}")
+    if np.issubdtype(array.dtype, np.floating):
+        finite = np.nan_to_num(array, nan=0.0, posinf=1.0, neginf=0.0)
+        if finite.size and float(finite.max()) <= 1.0 and float(finite.min()) >= 0.0:
+            finite = finite * 255.0
+        array = finite
+    array = np.clip(array, 0, 255).astype(np.uint8)
+    return Image.fromarray(array).convert("RGB")
 
 
 def load_source(url: str) -> Image.Image:
@@ -149,7 +165,7 @@ def main() -> None:
             guidance_scale=5.0,
             generator=generator,
         )
-        frames = [Image.fromarray(frame) if not isinstance(frame, Image.Image) else frame for frame in result.frames[0]]
+        frames = [frame_to_image(frame) for frame in result.frames[0]]
         clip_path = output_directory / f"shot-{index + 1}.mp4"
         export_to_video(frames, str(clip_path), fps=FPS, quality=9)
         shot_evidence = identity_evidence(source, frames, clip_model, clip_processor)

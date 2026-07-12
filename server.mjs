@@ -17,6 +17,7 @@ import {
   normalizeSourceViews,
 } from './lib/product-twin.mjs'
 import {
+  amdCinematicShotRange,
   buildStoryAiTrace,
   buildProductStoryPlan,
   createStoryActivity,
@@ -1574,16 +1575,26 @@ function buildAgentPrompt(input) {
 
 function buildProductStoryAgentPrompt(input) {
   const sourceCount = Math.max(1, input.sourceImages?.length || (input.productImage ? 1 : 0))
+  const shotRange = amdCinematicShotRange(input.videoRequest?.durationSeconds || 8)
+  const shotCountInstruction = shotRange.min === shotRange.max
+    ? `Create exactly ${shotRange.min} directed shots for this duration.`
+    : `Create ${shotRange.min} to ${shotRange.max} directed shots, using the fewest shots that the supplied visual evidence can support.`
   return [
-    'You are the Rukter.ai Product Story Director. Analyze the supplied views of one real product and direct a product-specific video plan.',
+    'You are the Rukter.ai Product Story Director. Analyze the supplied views of one real product or one seller-supplied product set or collection and direct an evidence-grounded video plan.',
     'Return only valid JSON with exactly three top-level fields: productAnalysis, productDNA, and videoDirection.',
     '{"productAnalysis":{"summary":"string","productType":"string","visibleDetails":["string"],"confidence":"string","needsReview":["string"]},"productDNA":{"category":"string","identitySummary":"string","identityLocks":["string"],"materials":["string"],"colors":["string"],"brandMarks":["string"],"visibleText":["string"],"components":["string"],"visualRisks":["string"],"motionAffordances":["string"]},"videoDirection":{"concept":"string","storyArc":"string","pacing":"string","scenePolicy":"string","shots":[{"purpose":"string","sourceViewIndex":1,"caption":"string","camera":"string","lighting":"string","environment":"string","action":"string","transition":"string","identityLocks":["string"],"allowedChanges":["string"],"forbiddenChanges":["string"],"allowPeople":false,"shotRole":"string","lens":"string","depthPlan":"string","lightingTransition":"string","sceneDynamics":"string","composition":"string","stagecraft":"string"}]}}',
     `Compare all ${sourceCount} source view${sourceCount === 1 ? '' : 's'} before describing the product. Treat the pixels as the primary evidence and never import category stereotypes or components that are not visible.`,
     'productDNA must describe this exact visible instance. identityLocks must name concrete shape, construction, color, material, mark, label, and component details that the renderer must preserve. Use empty arrays where evidence is uncertain.',
     'visibleText must reproduce exact source characters in their original script. Identity locks and brand marks may repeat that exact text. All other fields must be concise English.',
     'Do not invent ingredients, dimensions, certifications, origin, performance, price, popularity, medical claims, use claims, props, packaging, or body interaction. Put uncertain facts in needsReview.',
-    'Create 4 or 5 directed shots with real cinematic progression, not static catalog stills. Select the strongest source view for each beat and make camera, lighting, environment, action, transition, allowed changes, and forbidden changes specific to the visible product evidence.',
+    shotCountInstruction,
+    'Create real cinematic progression, not static catalog stills. Select the strongest source view for each beat and make camera, lighting, environment, action, transition, allowed changes, and forbidden changes specific to the visible product evidence.',
+    'When one source image contains multiple products, a coordinated set, a wide group, or a collage, treat the full visible group as a locked product identity. Never isolate, remove, duplicate, materialize, reorder, or independently animate an item; use whole-frame camera travel, focus, background depth, and lighting while preserving the exact item count and arrangement.',
+    'Do not direct unseen mechanical actions such as opening, retracting, spinning, folding, or rotating a component unless another supplied view proves that motion and geometry.',
     'Every shot must include shotRole, lens, depthPlan, lightingTransition, sceneDynamics, composition, and stagecraft. Use these fields to specify a start frame, visible mid-shot change, and stable end frame that Wan 2.2 can animate while keeping product pixels faithful.',
+    'Treat this as image-to-video: keep static identity evidence in productDNA and identityLocks, while camera, lightingTransition, and sceneDynamics describe only what visibly moves or changes over time. Do not re-describe the static source appearance inside motion directions.',
+    'Use exactly one primary camera move per shot, named concretely as Dolly In, Dolly Out, Dolly Left, Dolly Right, Crane Up, Crane Down, or Arc. Never stack or sequence multiple camera moves in one generated clip.',
+    'Use one specific lighting setup and one background-only temporal change per shot. Prefer observable lens, depth, light, shadow, and reflection behavior over vague words such as cinematic, epic, beautiful, dynamic, or premium.',
     'Make the film grammar adaptive to the visible product form: use material highlights for reflective objects, depth separation for complex silhouettes, legibility holds for text-heavy packaging, profile travel for hardware or shape, and final hero proof for buyer review.',
     'The product must remain complete, dominant, unobstructed, and visually unchanged. Camera, background, and lighting may move; product geometry, components, labels, colors, and printed text may not mutate.',
     'Set allowPeople to false unless the supplied people policy explicitly permits background-only people. Even then, people must never touch, overlap, or occlude the product.',

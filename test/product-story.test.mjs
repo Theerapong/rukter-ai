@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  amdCinematicShotRange,
   buildProductStoryPlan,
   buildStoryAiTrace,
   createStoryActivity,
@@ -173,7 +174,10 @@ test('builds a fast AMD render budget with fewer pixels and shorter shots', () =
   assert.equal(plan.renderResolution, 'fast')
   assert.equal(plan.output.width, 384)
   assert.equal(plan.output.height, 672)
-  assert.ok(plan.shots.every((shot) => shot.generation.durationSeconds === 2))
+  assert.equal(plan.shots.length, 2)
+  assert.ok(plan.shots.every((shot) => shot.generation.durationSeconds === 4))
+  assert.ok(plan.shots.every((shot) => shot.director.renderFramework === 'reference-locked-mcsla-one-move'))
+  assert.ok(plan.shots.every((shot) => shot.renderPrompt.split(/\s+/).length <= 100))
 })
 
 test('accepts one source photo for a Product Story', () => {
@@ -191,8 +195,11 @@ test('accepts one source photo for a Product Story', () => {
   assert.equal(plan.identityGuard.generativeProductAlteration, false)
 })
 
-test('keeps a one-photo AMD Cinematic job GPU-active with multiple directed shots', () => {
-  assert.equal(productStoryLimits.minAmdCinematicShots, 4)
+test('keeps AMD shot counts duration-aware so each render beat has enough time', () => {
+  assert.equal(productStoryLimits.minAmdCinematicShots, 2)
+  assert.deepEqual(amdCinematicShotRange(8), { min: 2, max: 2 })
+  assert.deepEqual(amdCinematicShotRange(15), { min: 3, max: 3 })
+  assert.deepEqual(amdCinematicShotRange(20), { min: 4, max: 5 })
   const plan = buildProductStoryPlan({
     request: { mode: 'amd_cinematic', durationSeconds: 15, sourceImages: [sources[0]] },
     kit: {
@@ -201,7 +208,7 @@ test('keeps a one-photo AMD Cinematic job GPU-active with multiple directed shot
       brandAngle: {},
     },
   })
-  assert.equal(plan.shots.length, 4)
+  assert.equal(plan.shots.length, 3)
   assert.equal(plan.shots.at(-1).endSeconds, 15)
   assert.ok(plan.shots.every((shot) => shot.sourceId === sources[0].id))
   assert.ok(plan.shots.every((shot) => shot.sourceUrl === sources[0].url))
@@ -209,6 +216,28 @@ test('keeps a one-photo AMD Cinematic job GPU-active with multiple directed shot
   assert.ok(plan.shots.every((shot) => shot.generation.task === 'text_guided_image_to_video'))
   assert.ok(plan.shots.every((shot) => shot.generation.runtime === 'AMD ROCm'))
   assert.equal(plan.identityGuard.rejectUnverifiedOutput, true)
+})
+
+test('uses only evidence-supported directed shots without repeating a group-shot plan', () => {
+  const directed = [
+    { purpose: 'Establish the unchanged seven-item set.', shotRole: 'locked_group_establish' },
+    { purpose: 'Finish on the unchanged complete set.', shotRole: 'locked_group_hero' },
+    { purpose: 'Unsupported extra detail.', shotRole: 'unsupported_extra' },
+  ]
+  const plan = buildProductStoryPlan({
+    request: { mode: 'amd_cinematic', durationSeconds: 8, sourceImages: [sources[0]] },
+    kit: {
+      productAnalysis: { productType: 'Seven-piece luggage set', visibleDetails: ['Seven cases in one fixed arrangement'] },
+      productDNA: { identityLocks: ['Seven cases in one fixed arrangement'] },
+      videoDirection: { shots: directed },
+      hero: {},
+      brandAngle: {},
+    },
+  })
+  assert.equal(plan.shots.length, 2)
+  assert.deepEqual(plan.shots.map((shot) => shot.director.shotRole), ['locked_group_establish', 'locked_group_hero'])
+  assert.ok(plan.shots.every((shot) => /keep the provided product or product set unchanged/i.test(shot.renderPrompt)))
+  assert.ok(plan.shots.every((shot) => !shot.renderPrompt.includes('unsupported_extra')))
 })
 
 test('does not regress an active AMD job back into capacity checking', () => {
@@ -419,7 +448,7 @@ test('keeps the public AMD GPU path on an always-on persistent Droplet', () => {
 
 test('builds a truthful Fireworks trace with observations and directed video prompts', () => {
   const plan = buildProductStoryPlan({
-    request: { mode: 'amd_cinematic', sourceImages: sources },
+    request: { mode: 'amd_cinematic', durationSeconds: 20, sourceImages: sources },
     kit: {
       productAnalysis: {
         productType: 'Carry-on suitcase',
@@ -515,6 +544,12 @@ test('gates AMD rendering behind an owner session approval and trusted uploads',
   assert.match(storyPromptSource, /People policy:/)
   assert.match(storyPromptSource, /shotRole, lens, depthPlan, lightingTransition, sceneDynamics, composition, and stagecraft/)
   assert.match(storyPromptSource, /real cinematic progression, not static catalog stills/)
+  assert.match(storyPromptSource, /product set or collection/)
+  assert.match(storyPromptSource, /full visible group as a locked product identity/)
+  assert.match(storyPromptSource, /Treat this as image-to-video/)
+  assert.match(storyPromptSource, /exactly one primary camera move per shot/)
+  assert.match(storyPromptSource, /Create exactly/)
+  assert.doesNotMatch(storyPromptSource, /Create 4 or 5 directed shots/)
   assert.match(serverSource, /lightingTransition: \{ type: 'string' \}/)
   assert.match(serverSource, /sceneDynamics: \{ type: 'string' \}/)
   assert.match(storyPromptSource, /visibleText must reproduce exact source characters/)

@@ -22,10 +22,10 @@ from transformers import CLIPModel, CLIPProcessor
 
 FPS = int(os.getenv("WAN_FPS", "16"))
 MAX_NUM_FRAMES = int(os.getenv("WAN_NUM_FRAMES", "81"))
-INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "24"))
-STORY_INFERENCE_STEP_BUDGET_PER_PASS = int(os.getenv("WAN_STORY_INFERENCE_STEP_BUDGET_PER_PASS", "48"))
-GUIDANCE_SCALE = float(os.getenv("WAN_GUIDANCE_SCALE", "3.2"))
-IDENTITY_RETRY_GUIDANCE_SCALE = float(os.getenv("WAN_IDENTITY_RETRY_GUIDANCE_SCALE", "2.8"))
+INFERENCE_STEPS = int(os.getenv("WAN_INFERENCE_STEPS", "32"))
+STORY_INFERENCE_STEP_BUDGET_PER_PASS = int(os.getenv("WAN_STORY_INFERENCE_STEP_BUDGET_PER_PASS", "120"))
+GUIDANCE_SCALE = float(os.getenv("WAN_GUIDANCE_SCALE", "4.5"))
+IDENTITY_RETRY_GUIDANCE_SCALE = float(os.getenv("WAN_IDENTITY_RETRY_GUIDANCE_SCALE", "3.5"))
 MODEL_ID = os.getenv("WAN_MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
@@ -37,6 +37,8 @@ OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
 SOURCE_MAX_BYTES = int(os.getenv("RUKTER_SOURCE_MAX_BYTES", str(8 * 1024 * 1024)))
 SOURCE_MAX_PIXELS = int(os.getenv("RUKTER_SOURCE_MAX_PIXELS", "32000000"))
 SOURCE_MAX_DIMENSION = int(os.getenv("RUKTER_SOURCE_MAX_DIMENSION", "12000"))
+BACKGROUND_TRIM_TOLERANCE = int(os.getenv("WAN_BACKGROUND_TRIM_TOLERANCE", "18"))
+BACKGROUND_TRIM_PADDING_RATIO = float(os.getenv("WAN_BACKGROUND_TRIM_PADDING_RATIO", "0.06"))
 Image.MAX_IMAGE_PIXELS = SOURCE_MAX_PIXELS
 ALLOWED_SOURCE_MIME_TYPES = {
     "image/avif",
@@ -299,9 +301,72 @@ def output_size(story: dict) -> tuple[int, int]:
     return 960, 544
 
 
-def resize_contain(image: Image.Image, width: int, height: int) -> Image.Image:
-    contained = ImageOps.contain(image.convert("RGB"), (width, height), Image.Resampling.LANCZOS)
-    corners = np.asarray(image.convert("RGB"), dtype=np.uint8)[
+def trim_uniform_background(image: Image.Image) -> Image.Image:
+    rgb = image.convert("RGB")
+    pixels = np.asarray(rgb, dtype=np.int16)
+    corners = pixels[
+        [0, 0, rgb.height - 1, rgb.height - 1],
+        [0, rgb.width - 1, 0, rgb.width - 1],
+    ]
+    background = np.median(corners, axis=0)
+    color_distance = np.max(np.abs(pixels - background), axis=2)
+    foreground = color_distance > max(1, BACKGROUND_TRIM_TOLERANCE)
+    rows, columns = np.where(foreground)
+    if not len(rows) or not len(columns):
+        return rgb
+    left, right = int(columns.min()), int(columns.max()) + 1
+    top, bottom = int(rows.min()), int(rows.max()) + 1
+    detected_area = max(1, (right - left) * (bottom - top))
+    detected_width_ratio = (right - left) / max(1, rgb.width)
+    detected_height_ratio = (bottom - top) / max(1, rgb.height)
+    detected_area_ratio = detected_area / max(1, rgb.width * rgb.height)
+    # A dark logo, handle, or label on an otherwise light product can look like
+    # the only foreground against white. Be conservative: missed trimming only
+    # leaves padding, while an over-tight crop can destroy product identity.
+    if (
+        detected_width_ratio < 0.35
+        or detected_height_ratio < 0.35
+        or detected_area_ratio < 0.18
+    ):
+        return rgb
+    # The crop must agree with a more sensitive foreground threshold. If the
+    # sensitive bounds expand materially, the high threshold probably found
+    # only a dark logo/panel inside a light product, so trimming is unsafe.
+    sensitive_threshold = max(2, round(max(1, BACKGROUND_TRIM_TOLERANCE) * 0.45))
+    sensitive_rows, sensitive_columns = np.where(color_distance > sensitive_threshold)
+    if not len(sensitive_rows) or not len(sensitive_columns):
+        return rgb
+    sensitive_left = int(sensitive_columns.min())
+    sensitive_right = int(sensitive_columns.max()) + 1
+    sensitive_top = int(sensitive_rows.min())
+    sensitive_bottom = int(sensitive_rows.max()) + 1
+    boundary_drift = max(
+        abs(left - sensitive_left) / max(1, rgb.width),
+        abs(right - sensitive_right) / max(1, rgb.width),
+        abs(top - sensitive_top) / max(1, rgb.height),
+        abs(bottom - sensitive_bottom) / max(1, rgb.height),
+    )
+    if boundary_drift > 0.08:
+        return rgb
+    left, right = sensitive_left, sensitive_right
+    top, bottom = sensitive_top, sensitive_bottom
+    padding = round(max(rgb.width, rgb.height) * max(0.0, min(0.2, BACKGROUND_TRIM_PADDING_RATIO)))
+    crop = (
+        max(0, left - padding),
+        max(0, top - padding),
+        min(rgb.width, right + padding),
+        min(rgb.height, bottom + padding),
+    )
+    if crop == (0, 0, rgb.width, rgb.height):
+        return rgb
+    return rgb.crop(crop)
+
+
+def resize_contain(image: Image.Image, width: int, height: int, trim_background: bool = True) -> Image.Image:
+    rgb = image.convert("RGB")
+    framed = trim_uniform_background(rgb) if trim_background else rgb
+    contained = ImageOps.contain(framed, (width, height), Image.Resampling.LANCZOS)
+    corners = np.asarray(rgb, dtype=np.uint8)[
         [0, 0, image.height - 1, image.height - 1],
         [0, image.width - 1, 0, image.width - 1],
     ]
@@ -530,14 +595,16 @@ def main() -> None:
 
     for index, shot in enumerate(shots):
         shot_start = 20 + (index * 68 / total_shots)
-        prompt_excerpt = str(shot.get("cinematicPrompt", ""))[:180]
+        prompt_excerpt = str(shot.get("renderPrompt") or shot.get("cinematicPrompt", ""))[:180]
         report_progress(
             round(shot_start, 1),
             f"Generating text-guided video shot {index + 1} of {total_shots} on AMD GPU",
             "video_generation",
             {"shot": index + 1, "totalShots": total_shots, "prompt": prompt_excerpt},
         )
-        source = resize_contain(load_source(shot["sourceUrl"]), width, height)
+        source_image = load_source(shot["sourceUrl"])
+        source = resize_contain(source_image, width, height)
+        identity_source = resize_contain(source_image, width, height, trim_background=False)
         duration = max(2, min(5, int(float(shot.get("generation", {}).get("durationSeconds", 3)))))
         num_frames = wan_frame_count(duration)
         allow_people = shot.get("allowPeople") is True
@@ -556,7 +623,7 @@ def main() -> None:
                     "video_generation",
                     {"shot": index + 1, "totalShots": total_shots, "attempt": attempt + 1, "maxAttempts": IDENTITY_RETRY_ATTEMPTS},
                 )
-            prompt = str(shot["cinematicPrompt"])
+            prompt = str(shot.get("renderPrompt") or shot["cinematicPrompt"])
             negative_prompt = str(shot.get("negativePrompt", ""))
             prompt, negative_prompt = apply_people_policy(prompt, negative_prompt, allow_people)
             if retrying:
@@ -590,7 +657,7 @@ def main() -> None:
                 "attempt": attempt + 1,
                 "maxAttempts": IDENTITY_RETRY_ATTEMPTS,
                 "identityLocks": identity_locks,
-                **identity_evidence(source, frames, clip_model, clip_processor, allow_people=allow_people),
+                **identity_evidence(identity_source, frames, clip_model, clip_processor, allow_people=allow_people),
             }
             attempt_history.append(attempt_evidence(shot_evidence))
             shot_evidence["attemptHistory"] = list(attempt_history)

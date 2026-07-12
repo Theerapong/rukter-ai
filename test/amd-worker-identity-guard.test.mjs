@@ -131,8 +131,56 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /max\(2, min\(5/)
   assert.match(pipeline, /STORY_INFERENCE_STEP_BUDGET_PER_PASS/)
   assert.match(pipeline, /story_inference_steps\(total_shots\)/)
+  assert.match(pipeline, /def trim_uniform_background/)
+  assert.match(pipeline, /sensitive_threshold/)
+  assert.match(pipeline, /boundary_drift/)
+  assert.match(pipeline, /identity_source = resize_contain\(source_image, width, height, trim_background=False\)/)
+  assert.match(pipeline, /identity_evidence\(identity_source, frames/)
+  assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\.get\("cinematicPrompt"/)
+  assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\["cinematicPrompt"\]/)
   assert.match(app, /STORY_PIPELINE_TIMEOUT_SECONDS/)
   assert.doesNotMatch(app, /timeout=18 \* 60/)
+})
+
+test('background trim rejects a low-contrast product crop driven by one dark component', { skip: skipReason }, () => {
+  const result = runWorkerScript(`
+import __future__, ast, json, numpy as np
+from PIL import Image, ImageDraw
+
+source = open('amd-worker/run_story_pipeline.py', encoding='utf-8').read()
+tree = ast.parse(source)
+selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'trim_uniform_background']
+namespace = {
+    'np': np,
+    'Image': Image,
+    'BACKGROUND_TRIM_TOLERANCE': 18,
+    'BACKGROUND_TRIM_PADDING_RATIO': 0.06,
+}
+module = ast.Module(body=selected, type_ignores=[])
+exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
+trim = namespace['trim_uniform_background']
+
+light_product = Image.new('RGB', (300, 300), 'white')
+draw = ImageDraw.Draw(light_product)
+draw.rectangle((45, 70, 255, 270), fill=(245, 245, 245))
+draw.rectangle((105, 20, 195, 80), fill=(45, 45, 45))
+protected = trim(light_product)
+
+panel_product = Image.new('RGB', (300, 300), 'white')
+draw = ImageDraw.Draw(panel_product)
+draw.rectangle((20, 20, 280, 280), fill=(245, 245, 245))
+draw.rectangle((75, 75, 225, 225), fill=(45, 45, 45))
+panel_protected = trim(panel_product)
+
+confident_product = Image.new('RGB', (400, 300), 'white')
+ImageDraw.Draw(confident_product).rectangle((100, 60, 300, 240), fill=(70, 70, 70))
+trimmed = trim(confident_product)
+print(json.dumps({'protected': protected.size, 'panelProtected': panel_protected.size, 'trimmed': trimmed.size}))
+`)
+  assert.deepEqual(result.protected, [300, 300])
+  assert.deepEqual(result.panelProtected, [300, 300])
+  assert.ok(result.trimmed[0] < 400)
+  assert.ok(result.trimmed[1] < 300)
 })
 
 test('worker rejects human hands and body parts as product-story contamination', () => {

@@ -29,16 +29,30 @@ CLIP_MODEL_ID = os.getenv("WAN_CLIP_MODEL_ID", "openai/clip-vit-base-patch32")
 IDENTITY_THRESHOLD = float(os.getenv("WAN_IDENTITY_THRESHOLD", "0.42"))
 IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD", "0.90"))
 OCR_RETENTION_THRESHOLD = float(os.getenv("WAN_OCR_RETENTION_THRESHOLD", "0.15"))
+HUMAN_CONTAMINATION_THRESHOLD = float(os.getenv("WAN_HUMAN_CONTAMINATION_THRESHOLD", "0.225"))
+HUMAN_CONTAMINATION_MARGIN = float(os.getenv("WAN_HUMAN_CONTAMINATION_MARGIN", "0.012"))
 OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
+HUMAN_CONTAMINATION_PROMPTS = [
+    "a human hand covering the product",
+    "a human arm or finger in front of the product",
+    "a person or body part in a product video",
+    "skin, fingers, fingernails, wrist, or forearm occluding an object",
+]
+CLEAN_PRODUCT_PROMPTS = [
+    "a product-only studio packshot with no people",
+    "only the source product on a clean background",
+    "a clean commercial product video without hands or body parts",
+]
 IDENTITY_RETRY_PROMPT = (
     " Product identity lock: preserve the exact source product silhouette, shell pattern, wheels, handles, "
     "logos, packaging text, colors, and proportions. Use minimal camera motion. Do not morph, replace, "
-    "redesign, relabel, or remove any visible product feature."
+    "redesign, relabel, or remove any visible product feature. Product-only frame: no people, hands, arms, "
+    "fingers, skin, wrists, or body parts may enter or occlude the product."
 )
 IDENTITY_RETRY_NEGATIVE = (
     " changed product identity, warped logo, missing text, unreadable text, different luggage, missing wheels, "
     "altered handles, changed shell pattern, product morphing, extra objects, person, human, hand, fingers, arm, "
-    "tool, pen, stick, utensil, unrelated box, unrelated packaging, background clutter"
+    "skin, wrist, forearm, fingernails, body part, tool, pen, stick, utensil, unrelated box, unrelated packaging, background clutter"
 )
 
 
@@ -154,6 +168,42 @@ def image_feature_tensor(features) -> torch.Tensor:
     raise RuntimeError(f"CLIP image features did not contain a tensor: {type(features).__name__}")
 
 
+def human_contamination_evidence(sample_features: torch.Tensor, clip_model, clip_processor) -> dict:
+    text_inputs = clip_processor(
+        text=[*HUMAN_CONTAMINATION_PROMPTS, *CLEAN_PRODUCT_PROMPTS],
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    )
+    text_inputs = {key: value.to("cuda") for key, value in text_inputs.items()}
+    with torch.inference_mode():
+        text_features = clip_model.get_text_features(**text_inputs)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    scores = (sample_features @ text_features.T).detach().float().cpu().numpy()
+    human_count = len(HUMAN_CONTAMINATION_PROMPTS)
+    human_scores = scores[:, :human_count]
+    clean_scores = scores[:, human_count:]
+    frame_human = human_scores.max(axis=1)
+    frame_clean = clean_scores.max(axis=1)
+    margins = frame_human - frame_clean
+    worst_index = int(np.argmax(margins))
+    worst_prompt_index = int(np.argmax(human_scores[worst_index]))
+    human_score = float(frame_human[worst_index])
+    clean_score = float(frame_clean[worst_index])
+    margin = float(margins[worst_index])
+    detected = human_score >= HUMAN_CONTAMINATION_THRESHOLD and margin >= HUMAN_CONTAMINATION_MARGIN
+    return {
+        "humanContaminationDetected": bool(detected),
+        "humanContaminationPrompt": HUMAN_CONTAMINATION_PROMPTS[worst_prompt_index],
+        "humanContaminationFrame": worst_index,
+        "humanContaminationScore": round(human_score, 4),
+        "humanContaminationCleanScore": round(clean_score, 4),
+        "humanContaminationMargin": round(margin, 4),
+        "humanContaminationThreshold": HUMAN_CONTAMINATION_THRESHOLD,
+        "humanContaminationMarginThreshold": HUMAN_CONTAMINATION_MARGIN,
+    }
+
+
 def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model, clip_processor) -> dict:
     samples = [frames[0], frames[len(frames) // 2], frames[-1]]
     inputs = clip_processor(images=[source, *samples], return_tensors="pt")
@@ -161,7 +211,9 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
     with torch.inference_mode():
         features = image_feature_tensor(clip_model.get_image_features(**inputs))
         features = features / features.norm(dim=-1, keepdim=True)
-    similarities = (features[1:] @ features[0]).detach().float().cpu().tolist()
+    sample_features = features[1:]
+    similarities = (sample_features @ features[0]).detach().float().cpu().tolist()
+    contamination = human_contamination_evidence(sample_features, clip_model, clip_processor)
     source_ocr = product_ocr_evidence(source)
     sampled_ocr = [product_ocr_evidence(frame) for frame in samples]
     source_tokens = source_ocr["productTokens"]
@@ -183,7 +235,11 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
         ocr_retention_reason = "required_below_clip_fallback"
     else:
         ocr_retention_reason = "clip_similarity_fallback"
-    verified = clip_similarity_min >= IDENTITY_THRESHOLD and (not ocr_retention_required or retention >= OCR_RETENTION_THRESHOLD)
+    verified = (
+        clip_similarity_min >= IDENTITY_THRESHOLD
+        and (not ocr_retention_required or retention >= OCR_RETENTION_THRESHOLD)
+        and not contamination["humanContaminationDetected"]
+    )
     return {
         "identityVerified": verified,
         "clipSimilarityMin": round(clip_similarity_min, 4),
@@ -198,6 +254,7 @@ def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model
         "ocrRetentionReason": ocr_retention_reason,
         "clipFallbackThreshold": IDENTITY_CLIP_FALLBACK_THRESHOLD,
         "threshold": IDENTITY_THRESHOLD,
+        **contamination,
     }
 
 

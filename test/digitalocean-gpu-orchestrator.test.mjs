@@ -25,6 +25,8 @@ test('builds cloud-init without placing the worker token in shell commands', () 
   const environment = Buffer.from(encodedEnvironment, 'base64').toString('utf8')
   assert.match(environment, /ROCM_WORKER_IMAGE=rocm\/pytorch:latest/)
   assert.match(environment, /WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD=0\.90/)
+  assert.match(environment, /WAN_HUMAN_CONTAMINATION_THRESHOLD=0\.225/)
+  assert.match(environment, /WAN_HUMAN_CONTAMINATION_MARGIN=0\.012/)
   assert.match(environment, /WAN_INFERENCE_STEPS=24/)
   assert.match(environment, /WAN_GUIDANCE_SCALE=3\.2/)
   assert.match(environment, /WAN_IDENTITY_RETRY_GUIDANCE_SCALE=2\.8/)
@@ -93,6 +95,68 @@ test('creates, verifies, and destroys one MI300X lease', async () => {
   assert.equal(createPayload.monitoring, true)
   assert.deepEqual(createPayload.tags, ['rukter-product-story-ephemeral'])
   assert.ok(requests.some((request) => request.method === 'DELETE'))
+})
+
+test('creates an always-on persistent MI300X lease instead of an ephemeral lease', async () => {
+  let createPayload
+  const fetchImpl = async (url, options = {}) => {
+    if (url.includes('tag_name=rukter-product-story-ephemeral')) return json({ droplets: [] })
+    if (url.includes('tag_name=rukter-product-story-persistent')) return json({ droplets: [] })
+    if (url.includes('/sizes?')) return json({ sizes: [{ slug: 'gpu-mi300x1-192gb-devcloud', available: true, regions: ['atl1'] }] })
+    if (url.includes('/account/keys')) return json({ ssh_keys: [{ name: 'rukter-key', fingerprint: 'aa:bb' }] })
+    if (url.endsWith('/v2/droplets') && options.method === 'POST') {
+      createPayload = JSON.parse(options.body)
+      return json({ droplet: { id: 321, created_at: createdAt } }, 202)
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    workerToken: 'control-token',
+    publicUrl: 'https://rukter.ai',
+    sshKeyName: 'rukter-key',
+    fetchImpl,
+    alwaysOnPersistent: true,
+  })
+  const lease = await orchestrator.startLease()
+  assert.equal(lease.id, '321')
+  assert.equal(lease.persistent, true)
+  assert.equal(lease.lifecycle, 'persistent')
+  assert.equal(lease.releasePolicy, 'retain_after_job')
+  assert.equal(lease.expiresAt, null)
+  assert.deepEqual(createPayload.tags, ['rukter-product-story-persistent'])
+  assert.equal(createPayload.name, 'rukter-product-story-persistent')
+})
+
+test('ensures the persistent MI300X worker is ready for user jobs', async () => {
+  const existing = {
+    id: 584070698,
+    status: 'active',
+    created_at: createdAt,
+    tags: ['rukter-product-story-persistent'],
+    networks: { v4: [{ type: 'public', ip_address: '203.0.113.44' }] },
+  }
+  const fetchImpl = async (url) => {
+    if (url.includes('tag_name=rukter-product-story-ephemeral')) return json({ droplets: [] })
+    if (url.includes('tag_name=rukter-product-story-persistent')) return json({ droplets: [existing] })
+    if (url.endsWith('/v2/droplets/584070698')) return json({ droplet: existing })
+    if (url === 'http://203.0.113.44:8080/health') {
+      return json({ status: 'ok', available: true, acceptingJobs: true, device: 'AMD Instinct MI300X VF', rocmVersion: '7.2.4' })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    workerToken: 'control-token',
+    publicUrl: 'https://rukter.ai',
+    fetchImpl,
+    pollIntervalMs: 1,
+  })
+  const lease = await orchestrator.ensurePersistentLease()
+  assert.equal(lease.status, 'ready')
+  assert.equal(lease.persistent, true)
+  assert.equal(lease.releasePolicy, 'retain_after_job')
+  assert.equal(lease.workerUrl, 'http://203.0.113.44:8080')
 })
 
 test('bootstraps the DigitalOcean metrics agent for GPU Insights', () => {

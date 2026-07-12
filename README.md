@@ -28,7 +28,8 @@ AMD Cinematic is the required compute-evidence path for judging.
 - `rocminfo`/worker health checks before accepting jobs.
 - GPU telemetry and worker logs exposed in the app during generation.
 - FIFO queue keeps render lifecycle predictable.
-- Persistent tagged worker support: `rukter-product-story-persistent`.
+- Always-on persistent tagged worker support: `rukter-product-story-persistent`.
+- The persistent MI300X Droplet is owner-funded and kept Active/ready between Product Story jobs.
 - Ephemeral workers are still destroyed after a job; persistent tagged workers are retained by policy.
 
 The app is intentionally honest about evidence. Motion Preview is useful for fast previews, but it is never labeled as AMD Cinematic output.
@@ -80,6 +81,7 @@ export AMD_GPU_REGION="atl1"
 export AMD_GPU_SIZE="gpu-mi300x1-192gb-devcloud"
 export AMD_GPU_IMAGE="amddevelopercloud-pytorch2100rocm724"
 export AMD_GPU_PERSISTENT_TAG="rukter-product-story-persistent"
+export AMD_GPU_ALWAYS_ON="true"
 npm start
 ```
 
@@ -122,7 +124,7 @@ GitLab CI runs the submission gates:
 - `docker:amd64-build`: builds and verifies a `linux/amd64` image.
 - `build:docr:digitalocean`: pushes the deploy image.
 - `terraform:apply:digitalocean`: deploys to DigitalOcean App Platform with `-auto-approve`.
-- `bootstrap:amd-persistent`: verifies the persistent AMD worker when used.
+- `bootstrap:amd-persistent`: creates the persistent AMD Droplet if missing, bootstraps it, and verifies that the worker remains ready.
 - `verify:public-image`: anonymously pulls `ghcr.io/theerapong/rukter-ai:latest` as `linux/amd64`.
 
 ## API Surface

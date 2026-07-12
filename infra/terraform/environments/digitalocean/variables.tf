@@ -183,6 +183,12 @@ variable "amd_gpu_public_enabled" {
   default     = false
 }
 
+variable "amd_gpu_always_on_enabled" {
+  type        = bool
+  description = "Keep the owner-funded persistent AMD GPU Droplet active and ready between Product Story jobs."
+  default     = true
+}
+
 variable "extra_environment" {
   type        = map(string)
   description = "Additional plain environment variables for the DigitalOcean app service."

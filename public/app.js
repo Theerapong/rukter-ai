@@ -192,21 +192,21 @@ function renderCapacity(capacity = config) {
   config.amdGpuAvailabilityReason = reason
   config.amdGpuPublicEnabled = publicEnabled
   config.amdGpuPersistent = persistent
-  amdModeState.textContent = persistent ? 'Persistent' : canStart ? requestable ? 'On demand' : 'Available' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
+  amdModeState.textContent = persistent ? 'Always-on' : canStart ? requestable ? 'On demand' : 'Available' : canQueue ? 'Queue' : available || requestable ? 'Owner locked' : 'Offline'
   amdModeInput.disabled = !canQueue
   amdModeOption.classList.toggle('is-disabled', !canQueue)
   amdModeState.title = canStart
     ? persistent
-      ? 'The persistent AMD GPU remains online after each Product Story job.'
+      ? 'The always-on AMD GPU stays active and ready between Product Story jobs.'
       : 'AMD GPU starts on demand and is destroyed after the job.'
     : canQueue
       ? 'The FIFO queue accepts the job and waits without GPU billing until capacity returns.'
       : reason || 'AMD Cinematic is unavailable.'
-  capacityState.textContent = persistent ? 'Online' : canStart ? requestable ? 'On demand' : 'Ready' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
+  capacityState.textContent = persistent ? 'Ready' : canStart ? requestable ? 'On demand' : 'Ready' : canQueue ? 'Queue ready' : available || requestable ? 'Locked' : 'Unavailable'
   capacityButton.classList.toggle('is-ready', canStart || canQueue)
   computeBadge.classList.toggle('is-safe', canStart || canQueue)
   computeBadge.querySelector('span').textContent = canStart
-    ? persistent ? 'AMD GPU persistent' : requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
+    ? persistent ? 'AMD GPU ready' : requestable ? 'AMD GPU on demand' : 'AMD GPU ready on demand'
     : canQueue
       ? 'AMD FIFO queue ready'
     : available
@@ -243,7 +243,7 @@ async function checkGpuCapacity() {
       amdModeInput.checked = true
       updateGenerateAvailability()
       showToast(capacity.persistentLease
-        ? 'Persistent AMD MI300X is online and will remain running after each job.'
+        ? 'Always-on AMD MI300X is active and ready for the next job.'
         : capacity.requestable
           ? 'AMD on-demand provisioning is ready. Starting the story will request one MI300X.'
           : 'AMD capacity is ready. Start the story to create the GPU Droplet.', 5600)

@@ -73,6 +73,7 @@ const defaultFireworksTotalTimeoutMs = 27_000
 const defaultFireworksMaxTokens = 2048
 const hackathonResponseBudgetMs = 30_000
 const amdGpuPublicUrl = process.env.RUKTER_AI_PUBLIC_URL || 'https://rukter.ai'
+const amdGpuAlwaysOnEnabled = String(process.env.AMD_GPU_ALWAYS_ON ?? 'true').toLowerCase() !== 'false'
 const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
   ? createDigitalOceanGpuOrchestrator({
       token: process.env.AMD_GPU_DIGITALOCEAN_TOKEN,
@@ -85,6 +86,7 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       sshKeyFingerprint: process.env.AMD_GPU_SSH_KEY_FINGERPRINT || '',
       sshKeyName: process.env.AMD_GPU_SSH_KEY_NAME || '',
       persistentTag: process.env.AMD_GPU_PERSISTENT_TAG || 'rukter-product-story-persistent',
+      alwaysOnPersistent: amdGpuAlwaysOnEnabled,
       ttlSeconds: Number(process.env.AMD_GPU_LEASE_TTL_SECONDS) || 1800,
       workerSourceBaseUrl: process.env.AMD_GPU_WORKER_SOURCE_BASE_URL,
     })
@@ -3677,10 +3679,11 @@ const server = http.createServer(async (req, res) => {
       amdGpuRegion: process.env.AMD_GPU_REGION || 'atl1',
       amdGpuSize: process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb-devcloud',
       amdGpuLeaseTtlSeconds: gpuLeaseOrchestrator?.leaseTtlSeconds || 1800,
+      amdGpuAlwaysOn: amdGpuAlwaysOnEnabled,
       amdGpuCapacityState: process.env.AMD_GPU_CAPACITY_STATE || 'unknown',
       amdGpuAvailabilityReason: process.env.AMD_GPU_AVAILABILITY_REASON || '',
       gpuZeroIdlePolicy: 'destroy_after_job',
-      gpuPersistentPolicy: 'retain_tagged_worker',
+      gpuPersistentPolicy: amdGpuAlwaysOnEnabled ? 'always_on_tagged_worker' : 'retain_tagged_worker',
       amdGpuPersistentTag: process.env.AMD_GPU_PERSISTENT_TAG || 'rukter-product-story-persistent',
       gpuQueuePolicy: 'fifo',
       gpuQueueConcurrency: 1,
@@ -3855,6 +3858,23 @@ server.listen(port, () => {
 })
 
 if (gpuLeaseOrchestrator) {
+  let persistentEnsureInFlight = null
+  const ensurePersistentAmdGpu = () => {
+    if (!amdGpuAlwaysOnEnabled || !storyGpuEnabled()) return Promise.resolve()
+    if (persistentEnsureInFlight) return persistentEnsureInFlight
+    persistentEnsureInFlight = gpuLeaseOrchestrator.ensurePersistentLease()
+      .then((lease) => {
+        console.log(`Persistent AMD GPU ready: ${lease.id} ${lease.region || ''} ${lease.gpuDevice || ''}`.trim())
+        return lease
+      })
+      .catch((error) => {
+        console.error(`Persistent AMD GPU ensure failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => {
+        persistentEnsureInFlight = null
+      })
+    return persistentEnsureInFlight
+  }
   const reap = () => {
     const activeLeaseIds = [...storyJobs.values()]
       .filter((job) => job.gpu?.billing === 'active_for_job' && job.gpu?.leaseId)
@@ -3867,4 +3887,6 @@ if (gpuLeaseOrchestrator) {
   }
   setTimeout(reap, 5_000).unref()
   setInterval(reap, 5 * 60_000).unref()
+  setTimeout(ensurePersistentAmdGpu, 15_000).unref()
+  setInterval(ensurePersistentAmdGpu, 5 * 60_000).unref()
 }

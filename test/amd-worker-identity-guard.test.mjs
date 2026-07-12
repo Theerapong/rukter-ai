@@ -114,6 +114,17 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /max\(2, min\(5/)
 })
 
+test('worker rejects human hands and body parts as product-story contamination', () => {
+  const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+  const storySource = readFileSync(path.join(repoRoot, 'lib', 'product-story.mjs'), 'utf8')
+  assert.match(pipeline, /HUMAN_CONTAMINATION_PROMPTS/)
+  assert.match(pipeline, /human_contamination_evidence/)
+  assert.match(pipeline, /humanContaminationDetected/)
+  assert.match(pipeline, /not contamination\["humanContaminationDetected"\]/)
+  assert.match(storySource, /Product-only commercial packshot/)
+  assert.match(storySource, /no hands, no fingers, no arms, no body parts/)
+})
+
 test('parses rocm-smi JSON telemetry into bounded GPU metrics', () => {
   const result = runWorkerScript(`
 import json, sys

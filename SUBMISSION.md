@@ -16,9 +16,9 @@ Track 3 - Unicorn (Open Innovation)
 
 ## Product Thesis
 
-Generic AI site builders already create attractive pages. Rukter focuses on a harder commerce problem: producing reusable product motion without changing the product, packaging text, or logo. A seller uploads one to eight photos. Fireworks Vision analyzes visible evidence and directs a source-grounded story. Motion Preview animates the exact source photos in the browser for zero GPU cost. AMD Cinematic provisions an ephemeral ROCm worker to generate separate Wan 2.2 clips, reject identity drift, and compose an MP4.
+Generic AI site builders already create attractive pages. Rukter focuses on a harder commerce problem: producing reusable product motion without changing the product, packaging text, or logo. A seller uploads one to eight photos. Fireworks Vision analyzes visible evidence and directs a source-grounded story. Motion Preview animates the exact source photos in the browser for zero GPU cost. AMD Cinematic uses an always-on MI300X ROCm worker to generate separate Wan 2.2 clips, reject identity drift, and compose an MP4.
 
-The user can see the entire system: upload, vision analysis, storyboard, GPU provision, motion shots, identity check, composition, and GPU release. The runtime inspector shows the current worker, billing state, output, and `destroy_after_job` policy. Failure never becomes an invisible spinner or a mislabeled browser fallback; it becomes a visible failed activity.
+The user can see the entire system: upload, vision analysis, storyboard, GPU provision, motion shots, identity check, composition, and persistent GPU retention. The runtime inspector shows the current worker, billing state, output, and always-on persistent policy. Failure never becomes an invisible spinner or a mislabeled browser fallback; it becomes a visible failed activity.
 
 ## AMD Differentiation
 

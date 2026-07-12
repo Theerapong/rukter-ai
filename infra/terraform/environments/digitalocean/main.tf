@@ -18,6 +18,7 @@ locals {
     RUKTER_AI_HOSTING_PLATFORM     = "digitalocean-app-platform"
     RUKTER_AI_PUBLIC_URL           = "https://rukter.ai"
     AMD_GPU_PUBLIC_ENABLED         = tostring(var.amd_gpu_public_enabled)
+    AMD_GPU_ALWAYS_ON              = tostring(var.amd_gpu_always_on_enabled)
     AMD_GPU_REGION                 = var.amd_gpu_region
     AMD_GPU_SIZE                   = var.amd_gpu_size
     AMD_GPU_IMAGE                  = var.amd_gpu_image

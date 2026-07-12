@@ -9,6 +9,12 @@ public_url="${RUKTER_AI_PUBLIC_URL:-https://rukter.ai}"
 source_base="${AMD_GPU_WORKER_SOURCE_BASE_URL:-${public_url%/}/amd-worker}"
 worker_version="${CI_COMMIT_SHA:-manual}"
 ssh_key="${AMD_GPU_SSH_PRIVATE_KEY_PATH:-${HOME}/.ssh/rukter_ai_amd_gpu_ed25519}"
+region="${AMD_GPU_REGION:-atl1}"
+size="${AMD_GPU_SIZE:-gpu-mi300x1-192gb-devcloud}"
+image="${AMD_GPU_IMAGE:-amddevelopercloud-pytorch2100rocm724}"
+vpc_uuid="${AMD_GPU_VPC_UUID:-}"
+ssh_key_fingerprint="${AMD_GPU_SSH_KEY_FINGERPRINT:-}"
+ssh_key_name="${AMD_GPU_SSH_KEY_NAME:-}"
 api_url="https://api.digitalocean.com/v2"
 
 if [[ ! -r "${ssh_key}" ]]; then
@@ -17,19 +23,84 @@ if [[ ! -r "${ssh_key}" ]]; then
 fi
 
 do_api() {
-  curl -fsS \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer ${AMD_GPU_DIGITALOCEAN_TOKEN}" \
-    "${api_url}$1"
+  local path="$1"
+  local method="${2:-GET}"
+  local body="${3:-}"
+  local args=(
+    -fsS
+    -H "Accept: application/json"
+    -H "Authorization: Bearer ${AMD_GPU_DIGITALOCEAN_TOKEN}"
+  )
+  if [[ "${method}" != "GET" ]]; then
+    args+=(-X "${method}")
+  fi
+  if [[ -n "${body}" ]]; then
+    args+=(-H "Content-Type: application/json" --data "${body}")
+  fi
+  curl "${args[@]}" "${api_url}${path}"
+}
+
+resolve_ssh_key_ref() {
+  if [[ -n "${ssh_key_fingerprint}" ]]; then
+    printf '%s\n' "${ssh_key_fingerprint}"
+    return
+  fi
+  if [[ -z "${ssh_key_name}" ]]; then
+    echo "Set AMD_GPU_SSH_KEY_FINGERPRINT or AMD_GPU_SSH_KEY_NAME so the persistent AMD Droplet can be recreated." >&2
+    exit 1
+  fi
+  local keys key_ref
+  keys="$(do_api "/account/keys?per_page=200")"
+  key_ref="$(jq -r --arg name "${ssh_key_name}" '.ssh_keys[]? | select(.name == $name) | (.fingerprint // (.id | tostring))' <<<"${keys}" | head -n 1)"
+  if [[ -z "${key_ref}" || "${key_ref}" == "null" ]]; then
+    echo "The configured AMD GPU SSH key name was not found in DigitalOcean: ${ssh_key_name}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${key_ref}"
+}
+
+create_persistent_droplet() {
+  local ssh_key_ref payload
+  ssh_key_ref="$(resolve_ssh_key_ref)"
+  payload="$(jq -n \
+    --arg name "rukter-product-story-persistent" \
+    --arg region "${region}" \
+    --arg size "${size}" \
+    --arg image "${image}" \
+    --arg tag "${persistent_tag}" \
+    --arg ssh_key_ref "${ssh_key_ref}" \
+    --arg vpc_uuid "${vpc_uuid}" \
+    '{
+      name: $name,
+      region: $region,
+      size: $size,
+      image: $image,
+      ssh_keys: [$ssh_key_ref],
+      backups: false,
+      ipv6: false,
+      monitoring: true,
+      tags: [$tag]
+    } + (if $vpc_uuid == "" then {} else {vpc_uuid: $vpc_uuid} end)')"
+  echo "No persistent AMD Droplet is active; creating ${size} in ${region} with tag ${persistent_tag}."
+  do_api "/droplets" "POST" "${payload}" >/dev/null
 }
 
 droplet_id=""
 droplet_ip=""
-for _ in $(seq 1 60); do
+created_persistent="0"
+for _ in $(seq 1 90); do
   droplets="$(do_api "/droplets?tag_name=${persistent_tag}&per_page=200")"
   count="$(jq '[.droplets[]?] | length' <<<"${droplets}")"
-  if [[ "${count}" -ne 1 ]]; then
-    echo "Expected exactly one persistent AMD Droplet tagged ${persistent_tag}; found ${count}." >&2
+  if [[ "${count}" -eq 0 ]]; then
+    if [[ "${created_persistent}" == "0" ]]; then
+      create_persistent_droplet
+      created_persistent="1"
+    fi
+    sleep 10
+    continue
+  fi
+  if [[ "${count}" -gt 1 ]]; then
+    echo "Expected exactly one persistent AMD Droplet tagged ${persistent_tag}; found ${count}. Refusing to keep duplicate always-on GPUs." >&2
     exit 1
   fi
   droplet_id="$(jq -r '.droplets[0].id | tostring' <<<"${droplets}")"
@@ -78,6 +149,8 @@ trap 'rm -f "${environment_file}"' EXIT
   printf 'WAN_MODEL_ID=Wan-AI/Wan2.2-TI2V-5B-Diffusers\n'
   printf 'WAN_IDENTITY_THRESHOLD=0.42\n'
   printf 'WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD=0.90\n'
+  printf 'WAN_HUMAN_CONTAMINATION_THRESHOLD=0.225\n'
+  printf 'WAN_HUMAN_CONTAMINATION_MARGIN=0.012\n'
   printf 'WAN_OCR_RETENTION_MIN_TOKENS=2\n'
   printf 'WAN_FPS=16\n'
   printf 'WAN_NUM_FRAMES=81\n'

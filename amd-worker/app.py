@@ -48,6 +48,27 @@ def rocm_evidence() -> dict:
     }
 
 
+async def collect_process_stream(stream, job: dict, parse_progress: bool = False) -> str:
+    chunks: list[str] = []
+    while True:
+        line = await stream.readline()
+        if not line:
+            break
+        text = line.decode("utf-8", errors="replace")
+        chunks.append(text)
+        if parse_progress and text.startswith("RUKTER_PROGRESS "):
+            try:
+                progress = json.loads(text.removeprefix("RUKTER_PROGRESS "))
+                job.update(
+                    progress=max(0, min(100, int(progress.get("progress", job.get("progress", 0))))),
+                    detail=str(progress.get("detail", "Running Product Story pipeline on AMD GPU"))[:240],
+                    updatedAt=time.time(),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+    return "".join(chunks)[-4000:]
+
+
 async def execute_story(job_id: str, request: StoryRequest) -> None:
     job = jobs[job_id]
     command = os.getenv("STORY_PIPELINE_COMMAND", "/opt/rukter/run_story_pipeline.sh")
@@ -71,9 +92,17 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=18 * 60)
+            stdout_task = asyncio.create_task(collect_process_stream(process.stdout, job, parse_progress=True))
+            stderr_task = asyncio.create_task(collect_process_stream(process.stderr, job))
+            try:
+                await asyncio.wait_for(process.wait(), timeout=18 * 60)
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+            stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
             if process.returncode != 0:
-                reason = stderr.decode("utf-8", errors="replace")[-800:] or stdout.decode("utf-8", errors="replace")[-800:]
+                reason = stderr[-800:] or stdout[-800:]
                 raise RuntimeError(f"AMD story pipeline failed: {reason}")
             if not output_path.exists():
                 raise RuntimeError("AMD story pipeline did not write output.json.")

@@ -31,6 +31,7 @@ const amdWorkerDir = path.join(__dirname, 'amd-worker')
 const uploadDir = path.join(__dirname, '.runtime', 'uploads')
 const port = Number(process.env.PORT || 3017)
 const storyJobs = new Map()
+const activeAmdStoryJobs = new Set()
 const storyJobTtlMs = 60 * 60 * 1000
 const maxBodyBytes = 6_000_000
 const maxUploadBytes = 4_000_000
@@ -1995,6 +1996,7 @@ function publicStoryJob(job) {
     status: job.status,
     requestedMode: job.requestedMode,
     effectiveMode: job.effectiveMode,
+    style: job.request.style,
     aspect: job.request.aspect,
     durationSeconds: job.request.durationSeconds,
     sourceImages: job.request.sourceImages,
@@ -2254,6 +2256,7 @@ async function processStoryJob(jobId) {
     touchStoryJob(job)
   } finally {
     delete job.controller
+    activeAmdStoryJobs.delete(jobId)
   }
 }
 
@@ -2263,6 +2266,13 @@ async function handleCreateStoryJob(req, res) {
     const rawBody = await readBody(req)
     const parsed = rawBody ? JSON.parse(rawBody) : {}
     const request = normalizeStoryRequest(parsed)
+    if (request.mode === 'amd_cinematic' && activeAmdStoryJobs.size) {
+      sendJson(res, 409, {
+        code: 'amd_gpu_busy',
+        error: 'AMD Cinematic is already rendering another Product Story. Wait for that GPU job to finish and release the Droplet.',
+      })
+      return
+    }
     if (request.mode === 'amd_cinematic' && !storyGpuEnabled()) {
       sendJson(res, 409, {
         code: 'amd_cinematic_unavailable',
@@ -2329,6 +2339,7 @@ async function handleCreateStoryJob(req, res) {
       updatedAt: now,
     }
     storyJobs.set(id, job)
+    if (request.mode === 'amd_cinematic') activeAmdStoryJobs.add(id)
     setTimeout(() => processStoryJob(id), 0)
     sendJson(res, 202, publicStoryJob(job))
   } catch (error) {

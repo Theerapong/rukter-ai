@@ -2219,7 +2219,17 @@ async function processStoryJob(jobId) {
         job.warning = releaseFailed
           ? `AMD GPU release failed: ${error instanceof Error ? error.message : String(error)} Use Release GPU now; the TTL reaper remains the final safeguard.`
           : `AMD Cinematic failed: ${error instanceof Error ? error.message : String(error)}`
-        if (!releaseFailed) updateStoryStep(job, 'gpu_provision', 'failed', 'AMD GPU job failed; no motion preview was substituted')
+        if (!releaseFailed) {
+          updateStoryStep(job, 'gpu_provision', 'failed', 'AMD GPU job failed; no motion preview was substituted')
+          for (const stepId of ['motion_shots', 'identity_check', 'video_composition']) {
+            updateStoryStep(job, stepId, 'skipped', 'Not run because the AMD GPU was not provisioned')
+          }
+          if (!job.gpu?.leaseId) {
+            job.gpu.status = 'offline'
+            job.gpu.billing = 'inactive'
+            updateStoryStep(job, 'release_gpu', 'skipped', 'No GPU Droplet was created; billing remained inactive')
+          }
+        }
         throw error
       }
     } else {

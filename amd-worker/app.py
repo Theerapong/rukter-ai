@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -30,6 +31,26 @@ def positive_env_int(name: str, default: int) -> int:
 
 
 MAX_JOB_HISTORY = positive_env_int("MAX_JOB_HISTORY", 100)
+
+
+def concise_pipeline_failure(stdout: str, stderr: str) -> str:
+    text = "\n".join(value for value in (stderr, stdout) if value)
+    identity = re.search(r"RuntimeError: Product identity verification failed for shot (\d+): (\{.*\})", text)
+    if identity:
+        return (
+            f"Product identity verification failed for shot {identity.group(1)}. "
+            "The generated clip did not preserve the required product identity evidence. "
+            f"Evidence: {identity.group(2)[:420]}"
+        )
+    runtime_errors = re.findall(r"RuntimeError: ([^\n]+)", text)
+    if runtime_errors:
+        return runtime_errors[-1][:700]
+    useful_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("Traceback ") and not line.startswith("  File ")
+    ]
+    return "\n".join(useful_lines[-4:])[:700] or "AMD story pipeline exited without a diagnostic."
 
 
 class StoryRequest(BaseModel):
@@ -188,7 +209,7 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
             if timed_out:
                 raise RuntimeError("AMD story pipeline exceeded its 18 minute execution limit.")
             if process.returncode != 0:
-                reason = stderr[-800:] or stdout[-800:]
+                reason = concise_pipeline_failure(stdout, stderr)
                 raise RuntimeError(f"AMD story pipeline failed: {reason}")
             if not output_path.exists():
                 raise RuntimeError("AMD story pipeline did not write output.json.")

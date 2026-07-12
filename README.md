@@ -231,7 +231,7 @@ After creating the persistent ROCm Droplet with the registered Rukter SSH key, r
 
 Keep `AMD_GPU_PUBLIC_ENABLED=false` until one complete create, render, identity-check, and lifecycle-policy cycle has been observed.
 
-The current AMD worker runs Wan2.2 TI2V 5B directly through Diffusers on ROCm. This is text-guided image-to-video: each Fireworks-directed prompt is conditioned on a real product view, then sampled frames are checked with CLIP similarity and OCR retention. AMD also documents an equivalent headless ComfyUI HTTP workflow for Wan2.2 5B on MI300X. That service-oriented ComfyUI path is compatible with this job contract, but the UI reports `Diffusers` until the worker backend is actually switched and verified; it does not claim ComfyUI based only on documentation.
+The current AMD worker runs Wan2.2 TI2V 5B directly through Diffusers on ROCm. This is text-guided image-to-video: each Fireworks-directed prompt is conditioned on a real product view, then sampled frames are checked with CLIP similarity and product-surface OCR retention. OCR found in editorial overlays, arrows, captions, or infographic labels is reported separately as annotation evidence and does not block an otherwise identity-safe product clip. AMD also documents an equivalent headless ComfyUI HTTP workflow for Wan2.2 5B on MI300X. That service-oriented ComfyUI path is compatible with this job contract, but the UI reports `Diffusers` until the worker backend is actually switched and verified; it does not claim ComfyUI based only on documentation.
 
 `POST /api/launch-kit`
 

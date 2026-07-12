@@ -429,20 +429,42 @@ function activityTrace(step, job) {
 
 function renderActivity(activity = initialActivity(), job = null) {
   activityList.replaceChildren(...activity.map((step, index) => {
+    const isActive = step.status === 'active'
+    const progressValue = isActive ? Math.max(0, Math.min(100, Number(step.progress) || 0)) : null
     const item = document.createElement('li')
     item.className = `activity-step is-${step.status || 'pending'}`
+    if (isActive) item.setAttribute('aria-current', 'step')
     const marker = document.createElement('span')
     marker.className = 'step-marker'
     marker.textContent = statusMarker(step, index)
+    const head = document.createElement('div')
+    head.className = 'activity-step-head'
     const title = document.createElement('strong')
     title.textContent = step.label
+    head.append(title)
+    if (isActive) {
+      const status = document.createElement('span')
+      status.className = 'activity-status'
+      status.textContent = 'In progress'
+      head.append(status)
+    }
     const detail = document.createElement('p')
-    detail.textContent = step.status === 'active' && step.progress
-      ? `${step.detail} · ${Math.round(step.progress)}%`
+    detail.className = 'step-detail'
+    detail.textContent = isActive
+      ? `${step.detail} · ${Math.round(progressValue)}%`
       : step.detail
     const copy = document.createElement('div')
     copy.className = 'activity-step-copy'
-    copy.append(title, detail)
+    copy.append(head, detail)
+    if (isActive) {
+      const progress = document.createElement('div')
+      progress.className = 'step-progress'
+      progress.setAttribute('aria-label', `Current step progress ${Math.round(progressValue)} percent`)
+      const progressFill = document.createElement('span')
+      progressFill.style.width = `${progressValue}%`
+      progress.append(progressFill)
+      copy.append(progress)
+    }
     const trace = activityTrace(step, job)
     if (trace) copy.append(trace)
     item.append(marker, copy)

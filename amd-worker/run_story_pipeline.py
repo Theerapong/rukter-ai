@@ -71,12 +71,24 @@ def normalized_tokens(image: Image.Image) -> set[str]:
     return {token.lower() for token in re.findall(r"[A-Za-z0-9]{3,}", text)}
 
 
+def image_feature_tensor(features) -> torch.Tensor:
+    if isinstance(features, torch.Tensor):
+        return features
+    for attribute in ("pooler_output", "image_embeds", "last_hidden_state"):
+        value = getattr(features, attribute, None)
+        if isinstance(value, torch.Tensor):
+            if value.ndim == 3:
+                return value[:, 0, :]
+            return value
+    raise RuntimeError(f"CLIP image features did not contain a tensor: {type(features).__name__}")
+
+
 def identity_evidence(source: Image.Image, frames: list[Image.Image], clip_model, clip_processor) -> dict:
     samples = [frames[0], frames[len(frames) // 2], frames[-1]]
     inputs = clip_processor(images=[source, *samples], return_tensors="pt")
     inputs = {key: value.to("cuda") for key, value in inputs.items()}
     with torch.inference_mode():
-        features = clip_model.get_image_features(**inputs)
+        features = image_feature_tensor(clip_model.get_image_features(**inputs))
         features = features / features.norm(dim=-1, keepdim=True)
     similarities = (features[1:] @ features[0]).detach().float().cpu().tolist()
     source_tokens = normalized_tokens(source)

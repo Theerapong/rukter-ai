@@ -99,9 +99,11 @@ test('ships live GPU telemetry through every AMD worker bootstrap path', () => {
   const dockerfile = readFileSync(path.join(repoRoot, 'amd-worker', 'Dockerfile'), 'utf8')
   const bootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')
   const app = readFileSync(path.join(repoRoot, 'amd-worker', 'app.py'), 'utf8')
+  const server = readFileSync(path.join(repoRoot, 'server.mjs'), 'utf8')
   assert.match(dockerfile, /gpu_telemetry\.py/)
   assert.match(bootstrap, /gpu_telemetry\.py/)
   assert.match(app, /collect_rocm_smi_metrics/)
+  assert.match(server, /gpu_telemetry\.py/)
 })
 
 test('parses rocm-smi JSON telemetry into bounded GPU metrics', () => {

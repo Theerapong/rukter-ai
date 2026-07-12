@@ -212,14 +212,16 @@ names = {
 }
 selected = []
 for node in tree.body:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+    if isinstance(node, ast.Import) and any(alias.name == 're' for alias in node.names):
+        selected.append(node)
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
         selected.append(node)
     elif isinstance(node, (ast.Assign, ast.AnnAssign)):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         if any(isinstance(target, ast.Name) and target.id in names for target in targets):
             selected.append(node)
 module = ast.Module(body=selected, type_ignores=[])
-namespace = {'re': re}
+namespace = {}
 exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
 locks = namespace['normalized_identity_locks']({'identityLocks': ['amber glass bottle', 'black dropper cap']})
 retry_prompt, retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], True)

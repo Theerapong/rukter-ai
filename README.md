@@ -1,100 +1,57 @@
 # Rukter.ai Product Story Director
 
-Rukter.ai Launch Agent is a Track 3 Unicorn submission concept for **AMD Developer Hackathon: ACT II**.
+Rukter.ai turns real product photos into short, identity-safe video ads. A seller uploads 1-8 product views, Fireworks AI reads the product evidence and writes a story plan, and the AMD Cinematic path renders the video on an AMD MI300X ROCm worker with product-identity checks before export.
 
-Public source: [github.com/Theerapong/rukter-ai](https://github.com/Theerapong/rukter-ai)
+- Live app: [rukter.ai](https://rukter.ai)
+- Public source: [github.com/Theerapong/rukter-ai](https://github.com/Theerapong/rukter-ai)
+- Public container: `ghcr.io/theerapong/rukter-ai:latest`
+- Hackathon track: Track 3 - Unicorn (Open Innovation)
 
-## Repository boundary and secrets
+## What It Does
 
-This public repository contains only the standalone `rukter.ai` hackathon application and its deployment definitions. The private `rukter.com` platform implementation is not included; `rukter.com` appears here only as a published HTTPS integration endpoint.
+1. Upload 1-8 product photos.
+2. Fireworks AI identifies the product and visible evidence.
+3. Rukter directs a product story with source-grounded prompts.
+4. Choose an output mode:
+   - `Motion Preview`: browser-composited preview, no GPU billing, not AMD compute evidence.
+   - `AMD Cinematic`: Wan 2.2 image-to-video clips on AMD ROCm, then final MP4 composition.
+5. CLIP and OCR identity checks reject generated clips that change the product, logo, or packaging evidence.
+6. The UI shows live job status, GPU state, queue state, worker logs, identity checks, and export actions.
 
-Never commit API keys, cloud tokens, SSH private keys, Terraform state, or runtime `.env` files. Production credentials are supplied only through protected, masked GitLab CI/CD variables and secret runtime environment values. `.env.example` contains names and non-secret placeholders only.
+## AMD Compute Usage
 
-It turns one to eight real product photos into a directed story. Fireworks Vision identifies the product and writes evidence-aware story copy. Motion Preview animates source photos in the browser and exports a portable WebM without GPU cost. AMD Cinematic creates one or more 3-5 second Wan 2.2 image-to-video shots on ROCm, verifies product identity per shot, and composes the accepted clips into a cinematic MP4.
+AMD Cinematic is the required compute-evidence path for judging.
 
-The default screen has no sample product. The primary flow is deliberately short: **upload views -> choose direction -> direct story -> export**. The workspace exposes all eight job activities, current progress, source-photo timeline, identity guard, worker state, GPU billing state, and release status.
+- AMD Developer Cloud GPU Droplet with AMD Instinct MI300X VF.
+- ROCm worker bootstrapped from this repository.
+- Wan 2.2 TI2V 5B generation through Diffusers on ROCm.
+- `rocminfo`/worker health checks before accepting jobs.
+- GPU telemetry and worker logs exposed in the app during generation.
+- FIFO queue keeps render lifecycle predictable.
+- Persistent tagged worker support: `rukter-product-story-persistent`.
+- Ephemeral workers are still destroyed after a job; persistent tagged workers are retained by policy.
 
-## Zero-idle AMD GPU lifecycle
+The app is intentionally honest about evidence. Motion Preview is useful for fast previews, but it is never labeled as AMD Cinematic output.
 
-AMD Cinematic uses an ephemeral lease instead of an always-on GPU:
+## Demo Checklist
 
-1. Rukter creates a story plan before requesting compute.
-2. The lease orchestrator creates one AMD MI300X worker only for that job.
-3. The worker must report a real ROCm device and pass product identity checks.
-4. The orchestrator destroys the GPU Droplet after success, failure, timeout, or cancellation.
-5. A five-minute background reaper destroys idle leases at a 30-minute hard TTL if the job process disappears.
+For a Track 3 demo, show these pieces:
 
-Powering off a GPU Droplet does not stop billing. The required release policy is `destroy_after_job`. Public AMD jobs remain disabled until the worker, destroy path, TTL reaper, regional access, and budget alerts have been verified manually.
+- `https://rukter.ai` accepting a new, unseen product photo set.
+- Fireworks vision evidence and directed prompts.
+- AMD Cinematic selected, not Motion Preview.
+- Worker status showing MI300X/ROCm readiness.
+- Live progress, GPU telemetry, and console logs while clips generate.
+- CLIP/OCR identity check results before the final MP4.
+- GitLab CI proving a public `linux/amd64` container image.
 
-Motion Preview is always available and starts no GPU lease. AMD Cinematic is disabled until a verified worker is online. A provisioning, generation, or identity-check failure fails the cinematic job visibly; Rukter never substitutes Motion Preview and labels it cinematic.
-
-## Product Twin
-
-The earlier 3D Product Twin remains available at `/product-twin.html`. It turns one to six product photos or one orbit video into an interactive, evidence-backed Product Twin. Orbit videos are decoded in the browser and reduced to six evenly spaced keyframes, so the original video never crosses the API boundary. Fireworks Vision identifies the product and visible packaging evidence. The server turns the detected region into a feathered transparent WebP asset, while Three.js provides a tactile preview and portable viewer.
-
-The isolation pipeline keeps the largest detected foreground component, closes small mask gaps, erodes the contaminated edge, feathers the alpha channel, and removes background color spill. Each product asset reports `matteQuality`, `foregroundCoverage`, `componentCount`, and `edgeDecontaminated` evidence.
-
-The Product Twin interface has one primary action: **Choose photos or video**. There is no sample product or default preview on its first screen. Optional notes, channel, and market settings stay behind the product-context control.
-
-The geometry labels are intentionally strict:
-
-- one source photo: `single_photo_2_5d` / **2.5D Product Twin Preview**
-- multiple source photos without a reconstructed model: `multi_view_capture` / **Multi-view Capture Preview**
-- multiple source photos plus a verified model URL from the AMD worker: `verified_multi_view_3d` / **Verified Multi-view 3D**
-
-Multiple photos alone never qualify as verified 3D. When a real reconstruction worker is not configured, the UI explicitly states that depth and unseen surfaces are not verified.
-
-## Orbit Video Reconstruction
-
-On macOS, a recorded orbit video can be converted to a textured USDZ mesh with RealityKit Object Capture:
-
-```bash
-chmod +x scripts/reconstruct-orbit-video.sh
-scripts/reconstruct-orbit-video.sh /path/to/product.MOV /path/to/product.usdz medium
-```
-
-The command extracts sequential frames with `ffmpeg`, compiles the RealityKit reconstruction helper, creates the asset, and validates it with `usdchecker`. This local path is useful for asset testing and Apple Quick Look. It is not labeled as AMD evidence; hackathon submission evidence must come from the configured AMD GPU worker or Fireworks inference path.
-
-The web viewer accepts either GLB or USDZ model URLs. A reconstructed asset can be inspected without altering the upload workflow:
-
-```text
-http://localhost:3017/product-twin.html?model=/assets/product.usdz&name=Product&frames=46
-```
-
-The Product Twin can be saved to Rukter or exported as a standalone ZIP containing:
-
-- `viewer.html`
-- `viewer.css`
-- `viewer.js`
-- `product-twin.json`
-- `images/product-*.webp`
-- `models/product.glb` or `models/product.usdz` when a model is present
-- `vendor/three.module.min.js`
-- `vendor/three.core.min.js`
-- portable GLTF and USD loaders when a model is present
-
-The generated build also includes:
-
-- AI product identification and editable description
-- source-view manifest and reconstruction status
-- observed visual evidence and explicit `not_verifiable` items
-- portable interactive 2.5D viewer or verified model reference
-- seller-verified claim guard that removes unsupported sales, review, health, and certification claims
-- Rukter draft payload
-
-The main Rukter product stays on `rukter.com`. This app is the AI doorway for `rukter.ai`.
-
-## Why This Fits Track 3
-
-Track 3 asks for an original AI application with practical product/startup potential and meaningful AMD platform usage. This project routes live product vision through Fireworks AI models hosted on AMD hardware. A separate AMD GPU reconstruction worker can be attached for verified multi-view GLB output. The generated evidence and product asset can also flow into Rukter as an unpublished editable draft.
-
-The `amdEvidence` object is intentionally strict: only a completed Fireworks inference is marked `amdComputeVerified: true`. Deterministic local fallback output is useful for development, but is explicitly marked ineligible as hackathon evidence.
+If `notebooks.amd.com/hackathon` is used for extra AMD evidence, shut it down after capture. The notebook is not required to keep the app running.
 
 ## Run Locally
 
 ```bash
-cp .env.example .env
-node server.mjs
+npm ci
+npm start
 ```
 
 Open:
@@ -103,203 +60,88 @@ Open:
 http://localhost:3017
 ```
 
-The app works without API keys in deterministic demo mode. To use Fireworks inference, set:
+The app starts in deterministic demo mode without secrets. To use real Fireworks inference:
 
 ```bash
 export FIREWORKS_API_KEY="..."
 export FIREWORKS_BASE_URL="https://api.fireworks.ai/inference/v1"
 export FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash"
 export FIREWORKS_VISION_MODEL="accounts/fireworks/models/kimi-k2p6"
-node server.mjs
+npm start
 ```
 
-`accounts/fireworks/models/deepseek-v4-flash` handles text-only requests. Image requests use the serverless multimodal `accounts/fireworks/models/kimi-k2p6` path because it is accessible to the current Fireworks account. Gemma remains configurable through `FIREWORKS_VISION_MODEL` or `GEMMA_VISION_MODEL` once a Gemma vision deployment is available.
-
-By default the server tries `deepseek-v4-flash` first, then `gpt-oss-20b` only when enough of the shared request budget remains. Override the fallback list with a comma-separated `FIREWORKS_MODEL_FALLBACKS` value.
-
-The production-safe defaults keep the request under the gateway budget while giving Fireworks enough room to return structured JSON:
+To enable AMD Cinematic:
 
 ```bash
-export FIREWORKS_REQUEST_TIMEOUT_MS="24000"
-export FIREWORKS_TOTAL_TIMEOUT_MS="27000"
-export FIREWORKS_MAX_TOKENS="2048"
-```
-
-To enable verified multi-view reconstruction, deploy an AMD GPU worker that implements `rukter.product_twin_reconstruction_request.v1`, then configure:
-
-```bash
-export AMD_3D_WORKER_URL="https://your-amd-worker.example/api/product-twin"
-export AMD_3D_WORKER_TOKEN="..."
-```
-
-The worker must return `status: "verified"`, an HTTPS `modelUrl`, and a model format such as `glb`. Worker failure or missing evidence falls back to the truthful multi-view preview mode.
-
-To create a real unpublished Rukter dashboard draft through MCP, connect Rukter OAuth or provide a server-side token:
-
-```bash
-export RUKTER_MCP_URL="https://rukter.com/mcp"
-export RUKTER_MCP_ACCESS_TOKEN="rkcg_access_v1..."
-export RUKTER_AI_PUBLIC_URL="https://rukter.ai"
-```
-
-For production deploys, set `RUKTER_MCP_ACCESS_TOKEN` as a masked GitLab CI/CD variable. Terraform mounts it into the DigitalOcean App Platform runtime as a secret. If the variable is absent, the app still works through the browser OAuth connect flow.
-
-The browser normalizes WebP, AVIF, or GIF uploads to a vision-compatible JPEG, then uploads the selected product views to `rukter.ai`. The primary image is sent to Fireworks as an inline data URL and the remaining public view URLs are supplied in the same multimodal request. Fireworks Vision returns `productAnalysis`, visible evidence, storefront copy, and SEO. Product Story jobs also expose a sanitized AI trace with the actual model ID, observations, seller verification items, and the generated video prompts. The UI never labels a run as Gemma unless the model that answered has a Gemma model ID.
-
-Each isolated WebP is also exposed through a generated `/uploads/*.webp` URL. The MCP draft handoff prefers that clean product asset over the original background photo, so the editable Rukter draft starts from the same visual used by the embedded preview and exported ZIP.
-
-Before the result reaches the storefront, a deterministic claim guard rewrites unsupported numeric claims, social proof, scarcity, health claims, and certifications unless those facts were supplied in the seller notes. The `amdEvidence.claimSafetyRewrites` field records how many generated strings were changed.
-
-If the seller needs to connect Rukter OAuth, the browser stores the current launch kit in session storage before redirecting. When OAuth returns with `?mcp=connected`, the app restores the launch kit and automatically attempts the draft save when a write token is available.
-
-## Docker
-
-Build an AMD64 image for hackathon-compatible deployment:
-
-```bash
-docker buildx build --platform linux/amd64 -t rukter-ai:latest .
-```
-
-Run:
-
-```bash
-docker run --rm -p 3017:3017 \
-  -e FIREWORKS_API_KEY="$FIREWORKS_API_KEY" \
-  -e FIREWORKS_BASE_URL="https://api.fireworks.ai/inference/v1" \
-  -e FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash" \
-  -e RUKTER_MCP_URL="https://rukter.com/mcp" \
-  -e RUKTER_AI_PUBLIC_URL="https://rukter.ai" \
-  rukter-ai:latest
-```
-
-The public submission image is published by GitHub Actions:
-
-```text
-ghcr.io/theerapong/rukter-ai:latest
-```
-
-The image workflow always publishes a `linux/amd64` manifest. GitHub Container Registry creates a new package as private, so its visibility must be changed to **Public** once after the first push; anonymous pull must then be verified before submission.
-
-## Hackathon Runtime Contract
-
-- server ready in under 60 seconds
-- every launch-kit response completes in under 30 seconds
-- generated strings are English, including when the source brief uses another script
-- distinct unseen inputs must produce distinct output
-- only successful Fireworks calls are presented as AMD compute evidence
-- submission image includes a `linux/amd64` manifest and is anonymously pullable
-
-Run the local contract check with:
-
-```bash
-npm run hackathon:contract
-```
-
-## DigitalOcean / AMD Developer Cloud
-
-The repo includes Terraform at `infra/terraform/environments/digitalocean` for the current DigitalOcean App Platform deployment. GitLab CI builds a `linux/amd64` image, plans the service, and deploys it through the manual apply job. Cloudflare routes `https://rukter.ai` to this service.
-
-AMD GPU Droplets are created with DigitalOcean monitoring enabled, and the worker bootstrap installs and starts `do-agent` so the Insights tab can receive Droplet and GPU telemetry. Existing persistent workers are re-bootstrapped by `bootstrap:amd-persistent`; that job fails if `do-agent` is not active. Metrics can take a few minutes to appear after the agent starts. For immediate live GPU proof during a render, SSH to the worker and run `watch -n 1 rocm-smi`.
-
-## API
-
-`POST /api/story-jobs`
-
-Starts an asynchronous Product Story job from one to eight uploaded image URLs. `GET /api/story-jobs/:id` returns the nine-step activity log, model provenance, image observations, directed Wan prompts, FIFO queue position, GPU lease state, billing state, identity policy, and output. `POST /api/story-jobs/:id/cancel` removes a waiting job or cancels and releases an active job. `POST /api/story-jobs/:id/release-gpu` explicitly destroys an active lease.
-
-The browser polls this job API, so a cinematic generation can take longer than the synchronous request limit without hiding progress or timing out the page. Job creation and status responses remain well under 30 seconds.
-
-AMD Cinematic reserves a FIFO position when the API accepts the job. Fireworks product analysis and prompt direction can run concurrently, but the queue has a render concurrency of one from capacity check through GPU destruction. Waiting jobs expose their position and jobs-ahead count, start no GPU billing, and advance automatically after success, failure, cancellation, or verified release. The production App Platform service intentionally runs one `basic-xxs` instance; horizontal scaling requires moving this in-memory queue and lock to a shared durable store.
-
-The production service contains the lease controller described in `infra/amd-gpu-orchestrator/README.md`. Configure its scoped DigitalOcean token and worker token before enabling AMD Cinematic:
-
-```bash
-export AMD_GPU_ORCHESTRATOR_URL="http://127.0.0.1:3017"
+export AMD_GPU_PUBLIC_ENABLED="true"
 export AMD_GPU_ORCHESTRATOR_TOKEN="..."
 export AMD_GPU_DIGITALOCEAN_TOKEN="..."
 export AMD_GPU_REGION="atl1"
 export AMD_GPU_SIZE="gpu-mi300x1-192gb-devcloud"
 export AMD_GPU_IMAGE="amddevelopercloud-pytorch2100rocm724"
-export AMD_GPU_VPC_UUID="<region-matched-vpc-uuid>"
-export AMD_GPU_PUBLIC_ENABLED="true"
-export AMD_GPU_QUEUE_MAX_SIZE="25"
-export AMD_GPU_CAPACITY_POLL_MS="30000"
 export AMD_GPU_PERSISTENT_TAG="rukter-product-story-persistent"
+npm start
 ```
 
-An owner-funded portal Droplet tagged `rukter-product-story-persistent` is retained after every job and excluded from TTL reaping. Ephemeral workers continue to use `rukter-product-story-ephemeral` and are destroyed after each job. Never apply both tags to the same Droplet.
+Useful checks:
 
-After creating the persistent ROCm Droplet with the registered Rukter SSH key, run the manual `bootstrap:amd-persistent` GitLab job. It installs the authenticated worker, verifies ROCm and `acceptingJobs`, and leaves the Droplet running.
-
-Keep `AMD_GPU_PUBLIC_ENABLED=false` until one complete create, render, identity-check, and lifecycle-policy cycle has been observed.
-
-The current AMD worker runs Wan2.2 TI2V 5B directly through Diffusers on ROCm. This is text-guided image-to-video: each Fireworks-directed prompt is conditioned on a real product view, then sampled frames are checked with CLIP similarity and product-surface OCR retention. OCR found in editorial overlays, arrows, captions, or infographic labels is reported separately as annotation evidence and does not block an otherwise identity-safe product clip. AMD also documents an equivalent headless ComfyUI HTTP workflow for Wan2.2 5B on MI300X. That service-oriented ComfyUI path is compatible with this job contract, but the UI reports `Diffusers` until the worker backend is actually switched and verified; it does not claim ComfyUI based only on documentation.
-
-`POST /api/launch-kit`
-
-```json
-{
-  "brief": "",
-  "channel": "TikTok Shop",
-  "market": "Thailand and Southeast Asia",
-  "productImage": {
-    "name": "serum.jpg",
-    "type": "image/jpeg",
-    "size": 281392,
-    "url": "https://rukter.ai/uploads/example.jpg"
-  },
-  "sourceImages": [
-    { "id": "front", "label": "Front", "url": "https://rukter.ai/uploads/front.jpg" },
-    { "id": "back", "label": "Back", "url": "https://rukter.ai/uploads/back.jpg" }
-  ]
-}
+```bash
+npm test
+npm run smoke
+curl -fsS http://localhost:3017/health
+curl -fsS "http://localhost:3017/api/gpu-capacity?refresh=1"
 ```
 
-The API returns:
+## Container
 
-- `kit`: generated product analysis and launch kit
-- `productAssets`: up to four transparent WebP product images derived from Fireworks bounding boxes and edge-connected alpha matting
-- `productTwin`: truthful mode, source views, preview/model references, reconstruction evidence, and visual evidence
-- `exportManifest`: the portable viewer/JSON/image/runtime file list
-- `draftPayload`: draft-safe payload for Rukter
-- `amdEvidence`: model, provider, timing budget, architecture, and verified Fireworks/AMD usage metadata
-- `mode`: `fireworks_inference` or `demo_fallback`
+The judging VM pulls `linux/amd64`, so builds must publish an amd64 manifest:
 
-`POST /api/export`
-
-Accepts `exportKind: "product-twin"`, `kit`, `productAssets`, and `productTwin`. It returns a static portable Product Twin ZIP with its own Three.js viewer and evidence manifest. It does not emit a fake `.glb`; a model URL is included only after verified AMD reconstruction.
-
-`POST /api/rukter-draft`
-
-Accepts the launch-kit API response fields and calls `https://rukter.com/mcp`:
-
-```json
-{
-  "input": { "brief": "Seller brief", "channel": "DTC", "market": "Global" },
-  "kit": { "...": "generated launch kit" },
-  "draftPayload": { "...": "draft-safe payload" }
-}
+```bash
+docker buildx build --platform linux/amd64 -t rukter-ai:latest .
+docker run --rm -p 3017:3017 rukter-ai:latest
 ```
 
-The endpoint calls MCP tool `create_home_page_draft`, keeps `draftOnly` semantics, and returns the dashboard URL for manual review.
+Anonymous public image check:
 
-The MCP arguments include:
+```bash
+docker pull --platform linux/amd64 ghcr.io/theerapong/rukter-ai:latest
+docker image inspect ghcr.io/theerapong/rukter-ai:latest --format '{{.Architecture}}/{{.Os}}'
+```
 
-- `qualityMode: "awwwards"`
-- `requiredCapabilities: ["image", "commerce", "media_slots", "freeform", "motion"]`
-- `creativePage.schema: "rukter.freeform_creative_page.v4"`
-- a sandboxed document with editable text selectors and media slots
-
-## Rukter Integration Contract
-
-This app does not publish anything automatically. It prepares a draft payload that can be passed into Rukter's existing draft workflow. The publish step remains a separate seller-controlled action inside the Rukter dashboard.
-
-That is the core product principle:
+Expected result:
 
 ```text
-AI creates the draft. The seller reviews and publishes.
+amd64/linux
 ```
 
-## Hackathon Submission Assets
+## CI And Deployment
 
-See [SUBMISSION.md](./SUBMISSION.md) for the title, short description, long description, slide outline, and demo script.
+GitLab CI runs the submission gates:
+
+- `node:smoke`: syntax checks, Python worker checks, shell checks, tests, health readiness, and smoke test.
+- `docker:amd64-build`: builds and verifies a `linux/amd64` image.
+- `build:docr:digitalocean`: pushes the deploy image.
+- `terraform:apply:digitalocean`: deploys to DigitalOcean App Platform with `-auto-approve`.
+- `bootstrap:amd-persistent`: verifies the persistent AMD worker when used.
+- `verify:public-image`: anonymously pulls `ghcr.io/theerapong/rukter-ai:latest` as `linux/amd64`.
+
+## API Surface
+
+- `GET /health` - readiness check.
+- `GET /api/config` - runtime configuration visible to the UI.
+- `GET /api/gpu-capacity?refresh=1` - AMD worker and capacity status.
+- `GET /api/story-queue` - FIFO queue snapshot.
+- `POST /api/story-jobs` - start an asynchronous Product Story job.
+- `GET /api/story-jobs/:id` - poll job progress, logs, GPU state, and output.
+- `POST /api/story-jobs/:id/cancel` - cancel a waiting or active job.
+- `POST /api/story-jobs/:id/release-gpu` - release an active GPU lease.
+- `POST /api/launch-kit` - legacy launch-kit generation endpoint.
+- `POST /api/export` - export generated assets.
+
+## Product Twin
+
+`/product-twin.html` is a related secondary tool. It creates an interactive Product Twin preview from product photos or an orbit video. It is useful for commerce asset exploration, but the main Track 3 compute proof is Product Story Director's AMD Cinematic flow.
+
+## Security Boundary
+
+This public repository contains only the standalone `rukter.ai` app, deployment definitions, and AMD worker bootstrap files. Do not commit API keys, cloud tokens, SSH private keys, Terraform state, or `.env` files. Production credentials belong in protected GitLab CI/CD variables and runtime secrets.

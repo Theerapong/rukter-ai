@@ -10,10 +10,14 @@ const python = process.env.PYTHON_BIN || process.env.PYTHON || 'python3'
 const probe = spawnSync(python, ['-c', 'import numpy; from PIL import Image'], { cwd: repoRoot, encoding: 'utf8' })
 const skipReason = probe.status === 0 ? false : 'Python image dependencies are unavailable'
 
-function runIdentityGuard(script) {
+function runWorkerScript(script) {
   const result = spawnSync(python, ['-c', script], { cwd: repoRoot, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr || result.stdout)
   return JSON.parse(result.stdout)
+}
+
+function runIdentityGuard(script) {
+  return runWorkerScript(script)
 }
 
 test('classifies overlay OCR as annotation instead of product identity', { skip: skipReason }, () => {
@@ -89,4 +93,51 @@ test('ships the identity guard helper through every AMD worker bootstrap path', 
   assert.match(dockerfile, /identity_guard\.py/)
   assert.match(bootstrap, /identity_guard\.py/)
   assert.match(server, /identity_guard\.py/)
+})
+
+test('ships live GPU telemetry through every AMD worker bootstrap path', () => {
+  const dockerfile = readFileSync(path.join(repoRoot, 'amd-worker', 'Dockerfile'), 'utf8')
+  const bootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')
+  const app = readFileSync(path.join(repoRoot, 'amd-worker', 'app.py'), 'utf8')
+  assert.match(dockerfile, /gpu_telemetry\.py/)
+  assert.match(bootstrap, /gpu_telemetry\.py/)
+  assert.match(app, /collect_rocm_smi_metrics/)
+})
+
+test('parses rocm-smi JSON telemetry into bounded GPU metrics', () => {
+  const result = runWorkerScript(`
+import json, sys
+sys.path.insert(0, 'amd-worker')
+from gpu_telemetry import parse_rocm_smi_json
+
+raw = json.dumps({
+  'card0': {
+    'GPU use (%)': '87%',
+    'GPU Memory Allocated (VRAM%)': '34%',
+    'Average Graphics Package Power (W)': '412.5 W',
+    'Temperature (Sensor edge) (C)': '72.4c',
+  }
+})
+print(json.dumps(parse_rocm_smi_json(raw)))
+`)
+  assert.equal(result.available, true)
+  assert.equal(result.utilizationPct, 87)
+  assert.equal(result.vramPct, 34)
+  assert.equal(result.powerWatts, 412.5)
+  assert.equal(result.temperatureC, 72.4)
+})
+
+test('preserves zero-valued rocm-smi telemetry samples', () => {
+  const result = runWorkerScript(`
+import json, sys
+sys.path.insert(0, 'amd-worker')
+from gpu_telemetry import parse_rocm_smi_json
+
+raw = json.dumps({'card0': {'GPU use (%)': '0%', 'GPU Memory Allocated (VRAM%)': '0%', 'Average Graphics Package Power (W)': '0 W'}})
+print(json.dumps(parse_rocm_smi_json(raw)))
+`)
+  assert.equal(result.available, true)
+  assert.equal(result.utilizationPct, 0)
+  assert.equal(result.vramPct, 0)
+  assert.equal(result.powerWatts, 0)
 })

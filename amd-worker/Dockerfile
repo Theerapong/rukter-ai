@@ -4,7 +4,7 @@ FROM --platform=linux/amd64 ${ROCM_BASE_IMAGE}
 WORKDIR /opt/rukter
 COPY requirements.txt ./
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
-COPY app.py identity_guard.py run_story_pipeline.py run_story_pipeline.sh ./
+COPY app.py gpu_telemetry.py identity_guard.py run_story_pipeline.py run_story_pipeline.sh ./
 RUN chmod 0755 run_story_pipeline.sh
 
 ENV PORT=8080

@@ -141,6 +141,15 @@ test('does not ask sellers to specify a market in the frontend', () => {
   }
 })
 
+test('keeps ready AMD videos from rendering as a black empty player before playback', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  assert.match(htmlSource, /<video id="generatedVideo"[^>]+preload="metadata"/)
+  assert.match(appSource, /function firstStoryPoster/)
+  assert.match(appSource, /generatedVideo\.poster = poster/)
+  assert.match(appSource, /if \(generatedVideo\.getAttribute\('src'\) !== videoUrl\)/)
+})
+
 test('builds a truthful Fireworks trace with observations and directed video prompts', () => {
   const plan = buildProductStoryPlan({
     request: { mode: 'amd_cinematic', sourceImages: sources },

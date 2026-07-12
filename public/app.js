@@ -43,6 +43,7 @@ const jobMode = $('#jobMode')
 const queueState = $('#queueState')
 const workerState = $('#workerState')
 const gpuState = $('#gpuState')
+const gpuLoadState = $('#gpuLoadState')
 const billingState = $('#billingState')
 const releasePolicyState = $('#releasePolicyState')
 const outputState = $('#outputState')
@@ -575,6 +576,31 @@ function showShot(index, animate = true) {
   timeline.querySelectorAll('.timeline-shot').forEach((button, buttonIndex) => button.classList.toggle('is-active', buttonIndex === activeShotIndex))
 }
 
+function firstStoryPoster(job = currentJob) {
+  return job?.plan?.shots?.[0]?.sourceUrl || job?.request?.sourceImages?.[0]?.url || ''
+}
+
+function setGeneratedVideo(job) {
+  const videoUrl = job?.output?.videoUrl || ''
+  if (!videoUrl) {
+    if (generatedVideo.getAttribute('src')) {
+      generatedVideo.removeAttribute('src')
+      generatedVideo.load()
+    }
+    generatedVideo.removeAttribute('poster')
+    generatedVideo.hidden = true
+    return
+  }
+  const poster = firstStoryPoster(job)
+  if (poster) generatedVideo.poster = poster
+  else generatedVideo.removeAttribute('poster')
+  if (generatedVideo.getAttribute('src') !== videoUrl) {
+    generatedVideo.src = videoUrl
+    generatedVideo.load()
+  }
+  generatedVideo.hidden = false
+}
+
 function friendlyStatus(status) {
   return ({
     queued: 'Queued',
@@ -598,6 +624,15 @@ function friendlyQueue(queue) {
   if (queue.state === 'checking_capacity' || queue.state === 'capacity_wait') return 'Next · waiting for capacity'
   if (queue.position) return `#${queue.position} · ${queue.jobsAhead} ahead`
   return 'Preparing'
+}
+
+function friendlyGpuLoad(telemetry) {
+  if (!telemetry?.available) return 'No sample'
+  const values = []
+  if (Number.isFinite(telemetry.utilizationPct)) values.push(`${Math.round(telemetry.utilizationPct)}% compute`)
+  if (Number.isFinite(telemetry.vramPct)) values.push(`${Math.round(telemetry.vramPct)}% VRAM`)
+  if (Number.isFinite(telemetry.powerWatts)) values.push(`${Math.round(telemetry.powerWatts)} W`)
+  return values.join(' · ') || 'Sampled'
 }
 
 function renderJobNotice(job) {
@@ -653,6 +688,9 @@ function renderJob(job) {
     ? waitingForGpu ? 'AMD FIFO queue' : (job.gpu?.device || 'AMD worker')
     : 'Browser compositor'
   gpuState.textContent = waitingForGpu ? 'Not started' : job.gpu?.status ? job.gpu.status.replaceAll('_', ' ') : 'Offline'
+  gpuLoadState.textContent = waitingForGpu || job.effectiveMode !== 'amd_cinematic'
+    ? 'No sample'
+    : friendlyGpuLoad(job.gpu?.telemetry)
   const gpuBillingActive = job.gpu?.billing === 'active_for_job'
   const gpuBillingPersistent = job.gpu?.billing === 'persistent_active' || job.gpu?.releasePolicy === 'retain_after_job'
   const gpuBillingUncertain = job.gpu?.billing === 'possibly_active'
@@ -679,15 +717,14 @@ function renderJob(job) {
   if (job.plan) {
     storyFrame.dataset.aspect = job.plan.aspect
     framePreparing.hidden = true
+    if (!timeline.children.length) renderTimeline(job.plan)
+    if (!storyImage.src) showShot(0, false)
     if (job.output?.videoUrl) {
-      generatedVideo.src = job.output.videoUrl
-      generatedVideo.hidden = false
+      setGeneratedVideo(job)
       storyImage.hidden = true
     } else {
-      generatedVideo.hidden = true
+      setGeneratedVideo(null)
       storyImage.hidden = false
-      if (!timeline.children.length) renderTimeline(job.plan)
-      if (!storyImage.src) showShot(0, false)
     }
   }
   if (gpuBillingPersistent && !ready) {
@@ -758,7 +795,7 @@ async function createStory() {
     renderTimeline(null)
     framePreparing.hidden = false
     storyImage.removeAttribute('src')
-    generatedVideo.hidden = true
+    setGeneratedVideo(null)
     setView('studio')
     window.scrollTo(0, 0)
     renderJob(job)
@@ -1036,7 +1073,7 @@ async function resumeStoryFromUrl() {
     activeShotIndex = 0
     renderTimeline(null)
     framePreparing.hidden = false
-    generatedVideo.hidden = true
+    setGeneratedVideo(null)
     setView('studio')
     renderJob(job)
     startElapsedTimer(job.createdAt)

@@ -34,7 +34,7 @@ install_digitalocean_metrics_agent() {
 
 install_digitalocean_metrics_agent
 
-for file in app.py identity_guard.py requirements.txt run_story_pipeline.py run_story_pipeline.sh; do
+for file in app.py gpu_telemetry.py identity_guard.py requirements.txt run_story_pipeline.py run_story_pipeline.sh; do
   if ! curl -fsSL "${RUKTER_WORKER_SOURCE_BASE%/}/${file}?v=${WORKER_VERSION:-unknown}" -o "/opt/rukter/${file}.download"; then
     if [[ ! -s "/opt/rukter/${file}" ]]; then
       echo "Unable to download ${file} and no preloaded copy exists." >&2

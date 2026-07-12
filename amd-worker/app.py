@@ -13,6 +13,8 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from gpu_telemetry import collect_rocm_smi_metrics
+
 
 app = FastAPI(title="Rukter AMD Product Story Worker", version="1.0.0")
 jobs: dict[str, dict] = {}
@@ -83,6 +85,13 @@ def rocm_evidence() -> dict:
         "rocmVersion": version,
         "rocmSmi": bool(smi),
     }
+
+
+def attach_gpu_telemetry(job: dict) -> dict:
+    payload = dict(job)
+    if payload.get("status") not in TERMINAL_JOB_STATUSES:
+        payload["gpuTelemetry"] = collect_rocm_smi_metrics()
+    return payload
 
 
 async def collect_process_stream(stream, job: dict, parse_progress: bool = False) -> str:
@@ -232,7 +241,14 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
             }
             async with worker_state_lock:
                 raise_if_cancelled(job_id)
-                job.update(status="ready", progress=100, detail="AMD Product Story ready", stage="complete", **output)
+                job.update(
+                    status="ready",
+                    progress=100,
+                    detail="AMD Product Story ready",
+                    stage="complete",
+                    gpuTelemetry=collect_rocm_smi_metrics(),
+                    **output,
+                )
     except StoryJobCancelled:
         async with worker_state_lock:
             job.update(status="cancelled", progress=100, detail="AMD Product Story cancelled", stage="cancelled", error="")
@@ -241,7 +257,13 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
             if job_id in cancel_requested_jobs:
                 job.update(status="cancelled", progress=100, detail="AMD Product Story cancelled", stage="cancelled", error="")
             else:
-                job.update(status="failed", progress=100, detail="AMD Product Story failed", error=str(error))
+                job.update(
+                    status="failed",
+                    progress=100,
+                    detail="AMD Product Story failed",
+                    error=str(error),
+                    gpuTelemetry=collect_rocm_smi_metrics(),
+                )
     finally:
         await terminate_process(process)
         async with worker_state_lock:
@@ -261,6 +283,7 @@ def health() -> dict:
         "service": "rukter-amd-story-worker",
         "workerVersion": os.getenv("WORKER_VERSION", "unknown"),
         "acceptingJobs": evidence["available"] and active_job_id is None,
+        "gpuTelemetry": collect_rocm_smi_metrics(),
         **evidence,
     }
 
@@ -297,7 +320,7 @@ def get_story_job(job_id: str, authorization: str | None = Header(default=None))
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="AMD Product Story job not found.")
-    return job
+    return attach_gpu_telemetry(job)
 
 
 @app.post("/v1/story-jobs/{job_id}/cancel")

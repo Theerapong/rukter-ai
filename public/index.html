@@ -140,7 +140,7 @@
               <div class="frame-shade"></div>
               <div class="frame-copy"><span id="shotNumber">01 / 05</span><h2 id="storyCaption">Preparing your story</h2></div>
               <div id="framePreparing" class="frame-preparing"><i></i><span>Analyzing source views</span></div>
-              <video id="generatedVideo" playsinline controls hidden></video>
+              <video id="generatedVideo" playsinline controls preload="metadata" hidden></video>
             </div>
           </div>
           <div class="playback-row">
@@ -168,6 +168,7 @@
             <div><dt>Queue</dt><dd id="queueState">Not required</dd></div>
             <div><dt>Worker</dt><dd id="workerState">Browser</dd></div>
             <div><dt>AMD GPU</dt><dd id="gpuState">Offline</dd></div>
+            <div><dt>GPU load</dt><dd id="gpuLoadState">No sample</dd></div>
             <div><dt>Billing</dt><dd id="billingState" class="safe">Inactive</dd></div>
             <div><dt>Release policy</dt><dd id="releasePolicyState">Destroy after job</dd></div>
             <div><dt>Output</dt><dd id="outputState">Waiting</dd></div>

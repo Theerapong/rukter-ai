@@ -2043,6 +2043,34 @@ function publicStoryQueue(job) {
   }
 }
 
+function normalizeGpuTelemetry(value) {
+  if (!value || typeof value !== 'object') return null
+  const numberField = (key, min, max) => {
+    const parsed = Number(value[key])
+    if (!Number.isFinite(parsed)) return null
+    return Math.max(min, Math.min(max, Math.round(parsed * 10) / 10))
+  }
+  return {
+    available: Boolean(value.available),
+    source: cleanText(value.source, 40) || 'rocm-smi',
+    sampledAt: cleanText(value.sampledAt, 80) || null,
+    utilizationPct: numberField('utilizationPct', 0, 100),
+    vramPct: numberField('vramPct', 0, 100),
+    powerWatts: numberField('powerWatts', 0, 1000),
+    temperatureC: numberField('temperatureC', -20, 130),
+    reason: cleanText(value.reason, 180),
+  }
+}
+
+function applyGpuTelemetry(job, value) {
+  const telemetry = normalizeGpuTelemetry(value)
+  if (!telemetry) return
+  job.gpu = {
+    ...job.gpu,
+    telemetry,
+  }
+}
+
 function publicStoryJob(job) {
   if (!job) return null
   return {
@@ -2321,6 +2349,7 @@ function handleAmdStoryEvent(job, event) {
       rocmVersion: '',
       leaseId: cleanText(event.lease?.id, 120),
     }
+    applyGpuTelemetry(job, event.lease?.gpuTelemetry)
     updateStoryStep(job, 'gpu_provision', 'active', event.detail, event.lease?.phase === 'worker_booting' ? 65 : 30)
   } else if (event.type === 'lease_ready') {
     job.gpu = {
@@ -2331,11 +2360,13 @@ function handleAmdStoryEvent(job, event) {
       rocmVersion: cleanText(event.lease?.rocmVersion, 80),
       leaseId: cleanText(event.lease?.id, 120),
     }
+    applyGpuTelemetry(job, event.lease?.gpuTelemetry)
     updateStoryStep(job, 'gpu_queue', 'completed', 'Exclusive AMD render slot active')
     updateStoryStep(job, 'gpu_provision', 'completed', `${job.gpu.device || 'AMD GPU'} ready`)
     updateStoryStep(job, 'motion_shots', 'active', 'Loading Wan 2.2 text-image-to-video on AMD ROCm', 0)
   } else if (event.type === 'job_progress') {
     job.status = 'generating'
+    applyGpuTelemetry(job, event.worker?.gpuTelemetry)
     const stage = cleanText(event.worker?.stage, 80)
     if (stage === 'identity_check') {
       const finalShot = Number(event.worker?.context?.shot) === Number(event.worker?.context?.totalShots)

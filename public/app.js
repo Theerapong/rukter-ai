@@ -11,6 +11,10 @@ const uploadView = $('#uploadView')
 const studioView = $('#studioView')
 const newStoryButton = $('#newStoryButton')
 const computeBadge = $('#computeBadge')
+const queuePopover = $('#queuePopover')
+const queuePopoverClose = $('#queuePopoverClose')
+const queueDetailsList = $('#queueDetailsList')
+const queueDetailsNote = $('#queueDetailsNote')
 const capacityButton = $('#capacityButton')
 const capacityState = $('#capacityState')
 const amdModeState = $('#amdModeState')
@@ -70,6 +74,7 @@ let playbackStartedAt = 0
 let playbackOffset = 0
 let toastTimer = null
 let activeShotIndex = 0
+let queueSnapshot = null
 const expandedActivitySteps = new Set()
 
 function showToast(message, duration = 4200) {
@@ -101,6 +106,18 @@ function formatElapsedSince(value) {
   const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000))
   if (seconds < 60) return `${seconds}s`
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
+function formatDurationMs(value) {
+  const seconds = Math.max(0, Math.floor((Number(value) || 0) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+  return `${Math.floor(seconds / 3600)}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}m`
+}
+
+function formatJobCount(count) {
+  const safe = Math.max(0, Number(count) || 0)
+  return `${safe} job${safe === 1 ? '' : 's'}`
 }
 
 function formatBytes(bytes) {
@@ -635,6 +652,132 @@ function friendlyGpuLoad(telemetry) {
   return values.join(' · ') || 'Sampled'
 }
 
+function queueStateDetail(value) {
+  return ({
+    preparing: 'Reserved while story prompts are prepared',
+    waiting: 'Waiting for the single AMD render slot',
+    checking_capacity: 'First in queue, checking AMD capacity',
+    capacity_wait: 'First in queue, waiting for AMD capacity',
+    active: 'This job owns the AMD render slot',
+    complete: 'Queue finished',
+    cancelled: 'Removed from queue',
+    failed: 'Queue ended after failure',
+    not_required: 'No AMD queue required',
+  })[value] || value || 'Unknown'
+}
+
+function billingDetail(job = currentJob) {
+  const billing = job?.gpu?.billing || 'inactive'
+  if (billing === 'persistent_active' || job?.gpu?.releasePolicy === 'retain_after_job') return 'Persistent GPU online'
+  if (billing === 'active_for_job') return 'Active for this job'
+  if (billing === 'possibly_active') return 'Release required'
+  return 'Inactive'
+}
+
+function activeSlotDetail(job = currentJob, snapshot = queueSnapshot) {
+  const queue = job?.queue || {}
+  if (snapshot?.activeSlot === 'this_job' || queue.state === 'active') return 'This job'
+  if (snapshot?.activeSlot === 'other_job' || Number(queue.jobsAhead) > 0) return 'Another anonymous job'
+  if (snapshot?.activeSlot === 'idle') return 'Idle'
+  if (snapshot?.activeJobPresent) return 'Occupied'
+  if (queue.state === 'checking_capacity' || queue.state === 'capacity_wait') return 'This job is first'
+  return 'No active AMD job'
+}
+
+function queueOverviewDetail(snapshot = queueSnapshot) {
+  if (!snapshot) return 'Checking'
+  return `${formatJobCount(snapshot.queuedJobs)} waiting · ${formatJobCount(snapshot.readyJobs)} ready · ${formatJobCount(snapshot.preparingJobs)} preparing`
+}
+
+function queueDetailRows(job = currentJob, snapshot = queueSnapshot) {
+  const queue = job?.queue || {}
+  const focus = snapshot?.focus || null
+  const policy = (snapshot?.policy || queue.policy || 'fifo').toUpperCase()
+  const concurrency = snapshot?.concurrency || queue.concurrency || 1
+  const rows = [
+    ['Policy', `${policy} · ${concurrency} active slot`],
+    ['Active slot', activeSlotDetail(job, snapshot)],
+    ['Queue total', queueOverviewDetail(snapshot)],
+  ]
+
+  if (!job) {
+    rows.push(['This job', 'No Product Story selected'])
+    rows.push(['Capacity', config.amdGpuPublicEnabled ? 'AMD Cinematic enabled' : 'AMD Cinematic offline'])
+    return rows
+  }
+
+  rows.push(['This job', queueStateDetail(queue.state || focus?.state)])
+  if (job.effectiveMode === 'amd_cinematic') {
+    const position = Number(queue.position || focus?.position) || 0
+    const jobsAhead = Number(queue.jobsAhead || focus?.jobsAhead) || 0
+    rows.push(['Position', position > 0 ? `#${position}` : queue.state === 'active' ? 'Active' : 'Complete'])
+    rows.push(['Jobs ahead', formatJobCount(jobsAhead)])
+  } else {
+    rows.push(['Position', 'Not in AMD queue'])
+    rows.push(['Jobs ahead', formatJobCount(0)])
+  }
+  rows.push(['GPU billing', billingDetail(job)])
+  rows.push(['AMD GPU', job.effectiveMode === 'amd_cinematic' ? (job.gpu?.device || job.gpu?.status || 'Not started') : 'Not used'])
+  if (job.gpu?.telemetry?.available) rows.push(['GPU load', friendlyGpuLoad(job.gpu.telemetry)])
+  if (Number(queue.waitMs) > 0) rows.push(['Wait time', formatDurationMs(queue.waitMs)])
+  if (queue.enqueuedAt) rows.push(['Enqueued', formatClock(queue.enqueuedAt)])
+  if (queue.startedAt) rows.push(['Slot started', formatClock(queue.startedAt)])
+  if (snapshot?.checkedAt) rows.push(['Updated', formatClock(snapshot.checkedAt)])
+  return rows
+}
+
+function queueDetailNote(job = currentJob, snapshot = queueSnapshot) {
+  if (snapshot?.error) return snapshot.error
+  const privacy = snapshot?.privacy || 'Queue details show anonymous job counts only.'
+  if (job?.queue?.note) return `${job.queue.note} ${privacy}`
+  if (snapshot?.activeSlot === 'other_job') return `Another Product Story job is using the single AMD render slot. ${privacy}`
+  if (snapshot?.queuedJobs > 0) return `There are queued Product Story jobs waiting for the AMD render slot. ${privacy}`
+  if (!config.amdGpuPublicEnabled) return `AMD Cinematic is offline for public jobs. ${privacy}`
+  return `No other AMD Product Story job is waiting in this queue snapshot. ${privacy}`
+}
+
+function renderQueueDetails() {
+  queueDetailsList.replaceChildren(...queueDetailRows().map(([label, value]) => {
+    const row = document.createElement('div')
+    const term = document.createElement('dt')
+    const detail = document.createElement('dd')
+    term.textContent = label
+    detail.textContent = value
+    row.append(term, detail)
+    return row
+  }))
+  queueDetailsNote.textContent = queueDetailNote()
+}
+
+async function refreshQueueDetails() {
+  const query = currentJob?.id ? `?jobId=${encodeURIComponent(currentJob.id)}` : ''
+  try {
+    const response = await fetch(`/api/story-queue${query}`, { cache: 'no-store', signal: AbortSignal.timeout(5_000) })
+    const snapshot = await response.json()
+    if (!response.ok) throw new Error(snapshot.error || 'Could not read AMD queue.')
+    queueSnapshot = snapshot
+  } catch (error) {
+    queueSnapshot = { error: error instanceof Error ? error.message : String(error) }
+  }
+  if (!queuePopover.hidden) renderQueueDetails()
+}
+
+function setQueuePopoverOpen(open) {
+  queuePopover.hidden = !open
+  computeBadge.setAttribute('aria-expanded', String(open))
+  queueState.setAttribute('aria-expanded', String(open))
+  if (open) {
+    renderQueueDetails()
+    void refreshQueueDetails()
+  }
+}
+
+function toggleQueuePopover(event) {
+  event?.preventDefault()
+  event?.stopPropagation()
+  setQueuePopoverOpen(queuePopover.hidden)
+}
+
 function renderJobNotice(job) {
   jobWarning.replaceChildren()
   jobWarning.classList.toggle('is-error', Boolean(job.error))
@@ -683,6 +826,7 @@ function renderJob(job) {
   jobMode.textContent = job.effectiveMode === 'amd_cinematic' ? 'AMD Cinematic' : 'Motion Preview'
   storyStyleState.textContent = job.plan?.styleLabel || 'Cinematic Product Film'
   queueState.textContent = friendlyQueue(job.queue)
+  queueState.title = job.queue?.note || 'Show AMD queue details'
   const waitingForGpu = ['preparing', 'waiting', 'checking_capacity', 'capacity_wait'].includes(job.queue?.state)
   workerState.textContent = job.effectiveMode === 'amd_cinematic'
     ? waitingForGpu ? 'AMD FIFO queue' : (job.gpu?.device || 'AMD worker')
@@ -706,6 +850,7 @@ function renderJob(job) {
     : waitingForGpu
       ? job.queue?.position ? `AMD queue #${job.queue.position}` : 'AMD queue next'
     : job.gpu?.status === 'released' ? 'AMD GPU released' : 'AMD GPU offline'
+  if (!queuePopover.hidden) renderQueueDetails()
   renderJobNotice(job)
   releaseGpuButton.disabled = gpuBillingPersistent || (!gpuBillingActive && !gpuBillingUncertain && !['ready', 'releasing'].includes(job.gpu?.status))
   releaseGpuButton.textContent = gpuBillingPersistent ? 'Persistent GPU stays online' : 'Release GPU now'
@@ -870,6 +1015,8 @@ function resetStory() {
   clearInterval(elapsedTimer)
   pauseStory()
   currentJob = null
+  queueSnapshot = null
+  setQueuePopoverOpen(false)
   history.replaceState(null, '', location.pathname)
   playbackOffset = 0
   activeShotIndex = 0
@@ -1095,7 +1242,17 @@ dropzone.addEventListener('drop', (event) => {
 })
 generateButton.addEventListener('click', createStory)
 capacityButton.addEventListener('click', checkGpuCapacity)
-computeBadge.addEventListener('click', checkGpuCapacity)
+computeBadge.addEventListener('click', toggleQueuePopover)
+queueState.addEventListener('click', toggleQueuePopover)
+queuePopoverClose.addEventListener('click', (event) => {
+  event.stopPropagation()
+  setQueuePopoverOpen(false)
+})
+queuePopover.addEventListener('click', (event) => event.stopPropagation())
+document.addEventListener('click', () => setQueuePopoverOpen(false))
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setQueuePopoverOpen(false)
+})
 document.querySelectorAll('input[name="storyMode"]').forEach((input) => input.addEventListener('change', updateGenerateAvailability))
 newStoryButton.addEventListener('click', resetStory)
 cancelJobButton.addEventListener('click', cancelJob)

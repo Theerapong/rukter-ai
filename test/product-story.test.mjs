@@ -150,6 +150,19 @@ test('keeps ready AMD videos from rendering as a black empty player before playb
   assert.match(appSource, /if \(generatedVideo\.getAttribute\('src'\) !== videoUrl\)/)
 })
 
+test('shows privacy-safe AMD queue details from the runtime badge', () => {
+  const appSource = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8')
+  const htmlSource = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  const serverSource = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+  assert.match(htmlSource, /id="queuePopover"/)
+  assert.match(htmlSource, /aria-controls="queuePopover"/)
+  assert.match(appSource, /function renderQueueDetails/)
+  assert.match(appSource, /\/api\/story-queue/)
+  assert.match(appSource, /anonymous job/)
+  assert.match(serverSource, /function publicAmdQueueSnapshot/)
+  assert.match(serverSource, /other job ids and user details are not exposed/)
+})
+
 test('builds a truthful Fireworks trace with observations and directed video prompts', () => {
   const plan = buildProductStoryPlan({
     request: { mode: 'amd_cinematic', sourceImages: sources },

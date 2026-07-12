@@ -38,6 +38,17 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .compute-badge i,.stage-state i{width:7px;height:7px;border-radius:50%;background:#8d8d8d}
 .compute-badge.is-active i,.stage-state.is-active i{background:var(--red);box-shadow:0 0 0 4px rgba(239,35,60,.12)}
 .compute-badge.is-safe i{background:var(--green)}
+.queue-popover{position:fixed;right:28px;top:58px;z-index:70;width:min(380px,calc(100vw - 32px));border:1px solid #cfcfca;border-radius:8px;background:#fff;color:var(--ink);box-shadow:0 18px 48px rgba(0,0,0,.18)}
+.queue-popover-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 14px 12px;border-bottom:1px solid var(--line)}
+.queue-popover-head span{display:block;margin-bottom:4px;color:var(--red);font:850 9px/1 Archivo,sans-serif;text-transform:uppercase}
+.queue-popover-head strong{font:850 17px/1 Archivo,sans-serif}
+.queue-close{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line);border-radius:4px;background:#fff;cursor:pointer}
+.queue-close svg{width:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.queue-details{margin:0;padding:4px 14px 2px}
+.queue-details div{display:grid;grid-template-columns:118px minmax(0,1fr);gap:12px;padding:9px 0;border-bottom:1px solid #ececea}
+.queue-details dt{color:#74746f;font-size:10px;font-weight:850;text-transform:uppercase}
+.queue-details dd{margin:0;font:750 12px/1.4 Archivo,sans-serif;text-align:right;overflow-wrap:anywhere}
+.queue-details-note{margin:0;padding:12px 14px 14px;color:#555;font-size:11px;line-height:1.55}
 
 .upload-view{min-height:calc(100vh - 68px);display:grid;grid-template-columns:minmax(320px,42%) minmax(500px,58%)}
 .upload-intro{padding:clamp(56px,7vw,112px) clamp(28px,6vw,96px);border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
@@ -223,6 +234,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .job-facts dd{margin:0;font:700 12px/1.35 Archivo,sans-serif;text-align:right}
 .job-facts dd.safe{color:#64d9ad}
 .job-facts dd.active{color:#ff7a8a}
+.fact-button{border:0;background:transparent;color:inherit;padding:0;text-align:right;cursor:pointer;font:inherit;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+.fact-button:hover{color:#ff9aa5}
 .identity-guard{display:grid;grid-template-columns:34px 1fr;gap:12px;padding:17px 0;border-bottom:1px solid #353535}
 .guard-icon{width:32px;height:32px;border:1px solid #555;display:grid;place-items:center}
 .guard-icon svg{width:18px;fill:none;stroke:#64d9ad;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
@@ -263,6 +276,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
 @media (max-width:560px){
   .app-header{height:60px;padding:0 14px}.brand{font-size:21px}.compute-badge{font-size:8px;padding:0 7px}.icon-link,.icon-button{width:34px;height:34px}
+  .queue-popover{top:52px;left:12px;right:12px;width:auto}.queue-details div{grid-template-columns:100px minmax(0,1fr)}
   .upload-view{min-height:calc(100vh - 60px)}.upload-intro{padding:36px 20px}.upload-intro h1{font-size:43px}.intro-copy{font-size:14px;margin-top:24px}.flow-summary{margin-top:32px}.flow-summary li{font-size:9px}
   .upload-workbench{padding:28px 20px 50px}.dropzone{min-height:230px}.source-grid{grid-template-columns:repeat(3,1fr)}
   .mode-selector{display:block}.mode-option+.mode-option{border-left:0;border-top:1px solid var(--line)}.style-selector{grid-template-columns:1fr}.style-option:nth-child(even){border-left:0}.style-option:nth-child(n+2){border-top:1px solid var(--line)}.direction-fields{grid-template-columns:1fr}

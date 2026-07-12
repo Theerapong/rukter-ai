@@ -27,6 +27,14 @@ if (config.gpuPersistentPolicy !== 'retain_tagged_worker' || config.amdGpuPersis
 if (config.storyLimits?.minImages !== 1 || config.storyLimits?.maxImages !== 8) {
   throw new Error('Product Story source image limits are incorrect.')
 }
+const queueResponse = await fetch(`${baseUrl}/api/story-queue`, { signal: AbortSignal.timeout(5_000) })
+const queueSnapshot = await queueResponse.json()
+if (!queueResponse.ok || queueSnapshot.policy !== 'fifo' || queueSnapshot.concurrency !== 1 || !queueSnapshot.privacy) {
+  throw new Error('Product Story anonymous queue snapshot contract is not configured.')
+}
+if ('activeId' in queueSnapshot || JSON.stringify(queueSnapshot).includes('story_')) {
+  throw new Error('Product Story queue snapshot exposed private job identifiers.')
+}
 const captureRuntime = await fetch(`${baseUrl}/vendor/html2canvas.min.js`, { signal: AbortSignal.timeout(5_000) })
 if (!captureRuntime.ok || (await captureRuntime.arrayBuffer()).byteLength < 100_000) {
   throw new Error('Visual screenshot runtime is missing.')

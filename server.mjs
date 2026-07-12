@@ -2043,6 +2043,40 @@ function publicStoryQueue(job) {
   }
 }
 
+function publicAmdQueueSnapshot(focusJobId = '') {
+  const snapshot = amdStoryQueue.snapshot()
+  const normalizedFocusId = String(focusJobId || '').trim()
+  const focus = normalizedFocusId ? amdStoryQueue.position(normalizedFocusId) : null
+  const pendingReady = snapshot.pending.filter((entry) => entry.ready).length
+  const activeSlot = snapshot.activeId
+    ? snapshot.activeId === normalizedFocusId
+      ? 'this_job'
+      : 'other_job'
+    : 'idle'
+  return {
+    policy: snapshot.policy,
+    concurrency: snapshot.concurrency,
+    capacity: snapshot.capacity,
+    size: snapshot.size,
+    activeSlot,
+    activeJobPresent: Boolean(snapshot.activeId),
+    activeIsCurrentJob: activeSlot === 'this_job',
+    queuedJobs: snapshot.pending.length,
+    readyJobs: pendingReady,
+    preparingJobs: snapshot.pending.length - pendingReady,
+    focus: focus ? {
+      state: focus.state,
+      position: Number(focus.position) || 0,
+      jobsAhead: Number(focus.jobsAhead) || 0,
+      ready: Boolean(focus.ready),
+      reservedAt: focus.reservedAt || null,
+      readyAt: focus.readyAt || null,
+    } : null,
+    privacy: 'Queue details show anonymous Product Story job counts only; other job ids and user details are not exposed.',
+    checkedAt: new Date().toISOString(),
+  }
+}
+
 function normalizeGpuTelemetry(value) {
   if (!value || typeof value !== 'object') return null
   const numberField = (key, min, max) => {
@@ -3693,6 +3727,11 @@ const server = http.createServer(async (req, res) => {
         billing: 'inactive',
       })
     }
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/story-queue') {
+    sendJson(res, 200, publicAmdQueueSnapshot(url.searchParams.get('jobId')))
     return
   }
 

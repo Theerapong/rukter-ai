@@ -84,6 +84,25 @@ function formatTime(seconds) {
   return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`
 }
 
+function formatPrecisePercent(value) {
+  const safe = Math.max(0, Math.min(100, Number(value) || 0))
+  return `${safe.toFixed(1)}%`
+}
+
+function formatClock(value = Date.now()) {
+  const date = value ? new Date(value) : new Date()
+  if (Number.isNaN(date.getTime())) return '--:--:--'
+  return date.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function formatElapsedSince(value) {
+  const started = value ? new Date(value).getTime() : 0
+  if (!started || Number.isNaN(started)) return '0s'
+  const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
 function formatBytes(bytes) {
   return bytes >= 1_000_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} KB`
 }
@@ -427,10 +446,36 @@ function activityTrace(step, job) {
   return details
 }
 
+function activeRuntimeLog(step, job, progressValue) {
+  const lines = []
+  const currentShot = Math.max(0, Number(job?.currentShot) || 0)
+  const totalShots = Math.max(0, Number(job?.totalShots) || 0)
+  lines.push(`[${formatClock()}] client poll OK - refreshing every 650ms`)
+  lines.push(`progress=${formatPrecisePercent(progressValue)} status=${job?.status || step.status || 'active'}`)
+  lines.push(`stage=${step.id} active_for=${formatElapsedSince(step.startedAt || job?.updatedAt)}`)
+  if (currentShot && totalShots) lines.push(`shot=${currentShot}/${totalShots}`)
+  if (job?.gpu?.status) lines.push(`gpu=${job.gpu.status} billing=${job.gpu.billing || 'unknown'}`)
+  if (job?.queue?.state && job.queue.state !== 'not_required') {
+    lines.push(`queue=${job.queue.state} ahead=${Number(job.queue.jobsAhead) || 0}`)
+  }
+  if (job?.updatedAt) lines.push(`server_updated=${formatClock(job.updatedAt)}`)
+  if (step.detail) lines.push(`detail=${step.detail}`)
+
+  const log = document.createElement('div')
+  log.className = 'step-runtime-log'
+  const label = document.createElement('span')
+  label.textContent = 'Live console'
+  const code = document.createElement('code')
+  code.textContent = lines.join('\n')
+  log.append(label, code)
+  return log
+}
+
 function renderActivity(activity = initialActivity(), job = null) {
   activityList.replaceChildren(...activity.map((step, index) => {
     const isActive = step.status === 'active'
     const progressValue = isActive ? Math.max(0, Math.min(100, Number(step.progress) || 0)) : null
+    const progressText = isActive ? formatPrecisePercent(progressValue) : ''
     const item = document.createElement('li')
     item.className = `activity-step is-${step.status || 'pending'}`
     if (isActive) item.setAttribute('aria-current', 'step')
@@ -445,13 +490,13 @@ function renderActivity(activity = initialActivity(), job = null) {
     if (isActive) {
       const status = document.createElement('span')
       status.className = 'activity-status'
-      status.textContent = 'In progress'
+      status.textContent = `In progress ${progressText}`
       head.append(status)
     }
     const detail = document.createElement('p')
     detail.className = 'step-detail'
     detail.textContent = isActive
-      ? `${step.detail} · ${Math.round(progressValue)}%`
+      ? `${step.detail} · ${progressText}`
       : step.detail
     const copy = document.createElement('div')
     copy.className = 'activity-step-copy'
@@ -459,11 +504,12 @@ function renderActivity(activity = initialActivity(), job = null) {
     if (isActive) {
       const progress = document.createElement('div')
       progress.className = 'step-progress'
-      progress.setAttribute('aria-label', `Current step progress ${Math.round(progressValue)} percent`)
+      progress.setAttribute('aria-label', `Current step progress ${progressText}`)
       const progressFill = document.createElement('span')
       progressFill.style.width = `${progressValue}%`
       progress.append(progressFill)
       copy.append(progress)
+      copy.append(activeRuntimeLog(step, job, progressValue))
     }
     const trace = activityTrace(step, job)
     if (trace) copy.append(trace)

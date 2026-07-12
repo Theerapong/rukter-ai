@@ -135,7 +135,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .activity-step p{margin:6px 0 0;font-size:12px;line-height:1.45;color:var(--muted)}
 .activity-status{display:inline-flex;min-height:20px;align-items:center;justify-content:center;border:1px solid rgba(239,35,60,.25);background:#fff;color:var(--red);padding:0 7px;border-radius:999px;font:850 10px/1 Archivo,sans-serif;text-transform:uppercase;white-space:nowrap}
 .step-progress{height:6px;margin-top:10px;overflow:hidden;border-radius:999px;background:#ffe1e4}
-.step-progress span{display:block;height:100%;min-width:10px;border-radius:inherit;background:linear-gradient(90deg,var(--red),#ff7a5c);box-shadow:0 0 14px rgba(239,35,60,.28);transition:width .28s ease}
+.step-progress span{position:relative;display:block;height:100%;min-width:10px;overflow:hidden;border-radius:inherit;background:linear-gradient(90deg,var(--red),#ff7a5c);box-shadow:0 0 14px rgba(239,35,60,.28);transition:width .28s ease}
+.step-progress span::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(115deg,rgba(255,255,255,.34) 0 7px,rgba(255,255,255,0) 7px 14px);animation:progress-stripe .9s linear infinite}
+.step-runtime-log{margin-top:9px;padding:8px 9px;border:1px solid rgba(239,35,60,.16);border-radius:6px;background:#211112;color:#ffe7e9;font:500 10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden}
+.step-runtime-log span{display:block;margin-bottom:5px;color:#ffb3ba;font:850 10px/1 Archivo,sans-serif;text-transform:uppercase;letter-spacing:.02em}
+.step-runtime-log code{display:block;max-height:110px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:inherit;font:inherit}
 .activity-trace{margin-top:11px;border-left:3px solid var(--red);padding-left:11px}
 .activity-trace summary{cursor:pointer;list-style:none;font:800 11px/1.35 Archivo,sans-serif;text-transform:uppercase;color:var(--ink);display:flex;align-items:center;justify-content:space-between;gap:8px}
 .activity-trace summary::-webkit-details-marker{display:none}
@@ -236,6 +240,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulse{50%{box-shadow:0 0 0 5px rgba(239,35,60,.12)}}
+@keyframes progress-stripe{to{transform:translateX(14px)}}
 @keyframes pushIn{from{transform:scale(1.02)}to{transform:scale(1.14)}}
 @keyframes panLeft{from{transform:scale(1.12) translateX(3%)}to{transform:scale(1.12) translateX(-3%)}}
 @keyframes rise{from{transform:scale(1.13) translateY(3%)}to{transform:scale(1.08) translateY(-2%)}}

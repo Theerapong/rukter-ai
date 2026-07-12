@@ -382,12 +382,6 @@ function activityTrace(step, job) {
     if (ai.inferenceDurationMs) appendTraceFact(facts, 'Inference', `${(ai.inferenceDurationMs / 1000).toFixed(1)}s · ${ai.inferenceAttempts || 1} attempt${ai.inferenceAttempts === 1 ? '' : 's'}`)
     appendTraceFact(facts, 'Role', ai.role)
     body.append(facts)
-    if (!ai.gemmaActive && ai.provider === 'Fireworks AI') {
-      const truth = document.createElement('p')
-      truth.className = 'trace-truth'
-      truth.textContent = 'Gemma is not active for this run. The model named above produced this analysis.'
-      body.append(truth)
-    }
     const summaryText = document.createElement('p')
     summaryText.className = 'trace-summary'
     summaryText.textContent = ai.summary

@@ -143,7 +143,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .activity-trace-body>b{display:block;margin:12px 0 5px;font:800 11px/1.35 Archivo,sans-serif;text-transform:uppercase}
 .activity-trace ul{margin:0;padding-left:16px;color:#3f3f3c;font-size:11px;line-height:1.55}
 .activity-trace .trace-summary{margin:9px 0;color:#2d2d2a;font-size:11px;line-height:1.55}
-.activity-trace .trace-truth{margin:9px 0;padding:9px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);color:#7d2328;font-weight:700}
 .trace-prompt{padding:8px 0;border-top:1px solid var(--line)}
 .trace-prompt b{display:block;font:800 11px/1.35 Archivo,sans-serif;text-transform:uppercase}
 .trace-prompt p{max-height:132px;overflow:auto;color:#353532!important;font-size:11px!important;line-height:1.55!important}

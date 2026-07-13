@@ -104,6 +104,7 @@ const defaultFireworksTotalTimeoutMs = 27_000
 const defaultFireworksStoryRequestTimeoutMs = 90_000
 const defaultFireworksStoryTotalTimeoutMs = 95_000
 const defaultFireworksMaxTokens = 4096
+const defaultFireworksStoryMaxTokens = 6144
 const hackathonResponseBudgetMs = 30_000
 const amdGpuPublicUrl = process.env.RUKTER_AI_PUBLIC_URL || 'https://rukter.ai'
 const amdGpuAlwaysOnEnabled = String(process.env.AMD_GPU_ALWAYS_ON ?? 'true').toLowerCase() !== 'false'
@@ -1912,7 +1913,10 @@ function fireworksRuntimeConfig(input) {
     totalTimeoutMs: productStory
       ? positiveNumber(process.env.FIREWORKS_STORY_TOTAL_TIMEOUT_MS, defaultFireworksStoryTotalTimeoutMs)
       : positiveNumber(process.env.FIREWORKS_TOTAL_TIMEOUT_MS, defaultFireworksTotalTimeoutMs),
-    maxTokens: Math.round(positiveNumber(process.env.FIREWORKS_MAX_TOKENS, defaultFireworksMaxTokens)),
+    maxTokens: Math.round(positiveNumber(
+      productStory ? process.env.FIREWORKS_STORY_MAX_TOKENS : process.env.FIREWORKS_MAX_TOKENS,
+      productStory ? defaultFireworksStoryMaxTokens : defaultFireworksMaxTokens,
+    )),
   }
 }
 
@@ -4683,6 +4687,7 @@ const server = http.createServer(async (req, res) => {
       storyRequestTimeoutMs: fireworksRuntimeConfig({ productImage: { url: '/uploads/story.jpg' }, videoRequest: { style: 'product_story' } }).requestTimeoutMs,
       storyTotalTimeoutMs: fireworksRuntimeConfig({ productImage: { url: '/uploads/story.jpg' }, videoRequest: { style: 'product_story' } }).totalTimeoutMs,
       maxTokens: fireworksRuntimeConfig().maxTokens,
+      storyMaxTokens: fireworksRuntimeConfig({ productImage: { url: '/uploads/story.jpg' }, videoRequest: { style: 'product_story' } }).maxTokens,
       runtimePlatform: `${process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`,
       mcpConfigured: Boolean(mcpAccessToken(req)),
       mcpEndpoint: mcpEndpoint(),

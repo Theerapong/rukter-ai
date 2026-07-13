@@ -536,6 +536,8 @@ test('gates AMD rendering behind an owner session approval and trusted uploads',
   assert.match(serverSource, /metadata\.pageHeight/)
   assert.match(serverSource, /allowPeople: \{ type: 'boolean' \}/)
   assert.match(serverSource, /defaultFireworksMaxTokens = 4096/)
+  assert.match(serverSource, /defaultFireworksStoryMaxTokens = 6144/)
+  assert.match(serverSource, /FIREWORKS_STORY_MAX_TOKENS/)
   assert.match(serverSource, /name: 'RukterProductStoryPlan'/)
   assert.match(serverSource, /required: \['productAnalysis', 'productDNA', 'videoDirection'\]/)
   assert.match(serverSource, /defaultFireworksStoryRequestTimeoutMs = 90_000/)

@@ -17,6 +17,7 @@ locals {
     FIREWORKS_STORY_REQUEST_TIMEOUT_MS = "90000"
     FIREWORKS_STORY_TOTAL_TIMEOUT_MS   = "95000"
     FIREWORKS_MAX_TOKENS               = "4096"
+    FIREWORKS_STORY_MAX_TOKENS         = "6144"
     RUKTER_AI_HOSTING_PLATFORM         = "digitalocean-app-platform"
     RUKTER_AI_PUBLIC_URL               = "https://rukter.ai"
     AMD_GPU_PUBLIC_ENABLED             = tostring(var.amd_gpu_public_enabled)

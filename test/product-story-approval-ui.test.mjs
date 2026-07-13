@@ -5,7 +5,10 @@ import test from 'node:test'
 const appSource = await readFile(new URL('../public/app.js', import.meta.url), 'utf8')
 const htmlSource = await readFile(new URL('../public/index.html', import.meta.url), 'utf8')
 
-test('keeps AMD capacity checks separate from explicit render approval', () => {
+test('defaults new Product Story runs to AMD while keeping explicit render approval', () => {
+  assert.doesNotMatch(htmlSource, /value="fast_story"\s+checked/)
+  assert.match(htmlSource, /id="amdModeInput"[^>]*value="amd_cinematic"[^>]*checked/)
+  assert.match(appSource, /document\.querySelector\('input\[name="storyMode"\]:checked'\)\?\.value \|\| 'amd_cinematic'/)
   assert.doesNotMatch(appSource, /amdModeInput\.checked\s*=\s*true/)
   assert.match(appSource, /Analyze & plan/)
   assert.match(appSource, /status === 'awaiting_approval'/)

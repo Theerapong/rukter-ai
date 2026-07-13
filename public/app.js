@@ -262,7 +262,7 @@ function setStoryLimits(value) {
 }
 
 function selectedMode() {
-  return document.querySelector('input[name="storyMode"]:checked')?.value || 'fast_story'
+  return document.querySelector('input[name="storyMode"]:checked')?.value || 'amd_cinematic'
 }
 
 function selectedStyle() {

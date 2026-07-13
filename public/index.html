@@ -85,12 +85,12 @@
             </div>
             <div class="mode-selector" role="radiogroup" aria-label="Generation mode">
               <label class="mode-option">
-                <input type="radio" name="storyMode" value="fast_story" checked>
+                <input type="radio" name="storyMode" value="fast_story">
                 <span><strong>Motion Preview</strong><small>Source-photo animation · browser only</small></span>
                 <i>Ready</i>
               </label>
               <label id="amdModeOption" class="mode-option">
-                <input id="amdModeInput" type="radio" name="storyMode" value="amd_cinematic">
+                <input id="amdModeInput" type="radio" name="storyMode" value="amd_cinematic" checked>
                 <span><strong>AMD Cinematic</strong><small>Wan 2.2 multi-clip filmmaking · persistent MI300X</small></span>
                 <i id="amdModeState">Checking</i>
               </label>
@@ -142,7 +142,7 @@
           </section>
 
           <button id="generateButton" class="generate-button" type="button" disabled>
-            <span>Direct Product Story</span>
+            <span>Analyze & plan</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5"/></svg>
           </button>
           <p id="computeNote" class="compute-note">AMD rendering starts only after direction approval. The persistent worker stays online and credits continue while it is active.</p>

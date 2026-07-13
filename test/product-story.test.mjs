@@ -25,6 +25,9 @@ const sources = Array.from({ length: 5 }, (_, index) => ({
 }))
 
 test('normalizes Product Story requests to portable source images', () => {
+  const defaultRequest = normalizeStoryRequest({ sourceImages: [sources[0]] })
+  assert.equal(defaultRequest.mode, 'amd_cinematic')
+
   const request = normalizeStoryRequest({
     mode: 'amd_cinematic',
     style: 'social_commerce',

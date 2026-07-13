@@ -5,7 +5,7 @@ Rukter.ai's existing App Platform service is the always-on control plane. For pu
 - `POST /v1/leases`: adopt the always-on persistent `gpu-mi300x1-192gb-devcloud` Droplet, or recreate that persistent Droplet if it is missing.
 - `GET /v1/leases/:id`: report Droplet startup, worker bootstrap, ROCm proof, and the ready worker URL.
 - `POST /v1/leases/:id/release`: destroy an ephemeral Droplet, or return `retained` for an owner-funded persistent worker.
-- Every ephemeral lease has a 50-minute hard TTL. A one-minute reaper destroys expired ephemeral-tagged Droplets even if the web request or worker fails; persistent-tagged workers are excluded.
+- Every ephemeral lease has a 30-minute hard TTL by default. A one-minute reaper destroys expired ephemeral-tagged Droplets even if the web request or worker fails; persistent-tagged workers are excluded.
 
 Required safeguards:
 
@@ -24,9 +24,9 @@ AMD_GPU_SIZE=gpu-mi300x1-192gb-devcloud
 AMD_GPU_IMAGE=amddevelopercloud-pytorch2100rocm724
 AMD_GPU_VPC_UUID=<region-matched-vpc-uuid>
 AMD_GPU_REGION=atl1
-AMD_GPU_LEASE_TTL_SECONDS=3000
+AMD_GPU_LEASE_TTL_SECONDS=1800
 AMD_GPU_PERSISTENT_TAG=rukter-product-story-persistent
 AMD_GPU_ALWAYS_ON=true
 ```
 
-Do not enable the public flag until the worker image, region access, output storage, identity checks, budget alert, and TTL reaper have all been verified with one manual lease.
+Production currently uses the persistent worker path. Do not enable the public flag until the worker image, region access, output storage, identity checks, duplicate-persistent protection, and ephemeral TTL reaper have all been verified.

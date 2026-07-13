@@ -152,7 +152,11 @@ async function startCloudflareMock(t, options = {}) {
       }
 
   function responseRuleset() {
-    return structuredClone(ruleset)
+    const response = structuredClone(ruleset)
+    if (options.omitEmptyRules && response?.rules?.length === 0) {
+      delete response.rules
+    }
+    return response
   }
 
   function sendJson(res, status, value) {
@@ -630,6 +634,14 @@ test('acquire creates the zone entrypoint only when it is missing', async (t) =>
   const payload = JSON.parse(entrypointCreate.body)
   assert.equal(payload.kind, 'zone')
   assert.equal(payload.phase, phase)
+  assert.equal(ctx.mock.ruleset.rules[0].ref, gateIdentity(ctx.owner).ref)
+  assert.equal((await run('release', ctx.env)).code, 0)
+})
+
+test('acquire accepts Cloudflare empty entrypoints without a rules array', async (t) => {
+  const ctx = await setup(t, { missingEntrypoint: true, omitEmptyRules: true })
+  const result = await run('acquire', ctx.env)
+  assert.equal(result.code, 0, result.stderr)
   assert.equal(ctx.mock.ruleset.rules[0].ref, gateIdentity(ctx.owner).ref)
   assert.equal((await run('release', ctx.env)).code, 0)
 })

@@ -399,13 +399,13 @@ read_entrypoint() {
     and (.result.id | type == "string" and test("^[a-f0-9]{32}$"))
     and .result.kind == "zone"
     and .result.phase == $phase
-    and (.result.rules | type == "array")
+    and ((.result.rules // []) | type == "array")
   ' "${response_file}" >/dev/null || {
     echo "Cloudflare custom-firewall entrypoint response was malformed." >&2
     rm -f "${response_file}"
     exit 1
   }
-  jq -c '.result' "${response_file}"
+  jq -c '.result | .rules = (.rules // [])' "${response_file}"
   rm -f "${response_file}"
 }
 
@@ -425,13 +425,13 @@ fetch_ruleset() {
     and .result.id == $id
     and .result.kind == "zone"
     and .result.phase == $phase
-    and (.result.rules | type == "array")
+    and ((.result.rules // []) | type == "array")
   ' "${response_file}" >/dev/null || {
     echo "Cloudflare ruleset response was malformed or changed scope." >&2
     rm -f "${response_file}"
     exit 1
   }
-  jq -c '.result' "${response_file}"
+  jq -c '.result | .rules = (.rules // [])' "${response_file}"
   rm -f "${response_file}"
 }
 

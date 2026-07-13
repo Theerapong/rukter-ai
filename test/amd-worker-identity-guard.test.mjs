@@ -337,7 +337,7 @@ namespace = {
     'np': np,
     'HUMAN_CONTAMINATION_THRESHOLD': 0.225,
     'HUMAN_CONTAMINATION_MARGIN': 0.012,
-    'HUMAN_CONTAMINATION_SOURCE_DELTA': 0.020,
+    'HUMAN_CONTAMINATION_SOURCE_DELTA': 0.015,
 }
 module = ast.Module(body=selected, type_ignores=[])
 exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
@@ -349,6 +349,9 @@ new_character = decide(
     False,
 )
 same_as_source = decide(np.array([[0.2500, 0.1900]]), np.array([[0.2000]]), np.array([0.2490, 0.1800]), False)
+edge_hair_regression = decide(np.array([[0.2258, 0.1900]]), np.array([[0.2405]]), np.array([0.2093, 0.1800]), False)
+below_absolute_threshold = decide(np.array([[0.2249, 0.1900]]), np.array([[0.2000]]), np.array([0.1900, 0.1800]), False)
+below_novelty_delta = decide(np.array([[0.2258, 0.1900]]), np.array([[0.2405]]), np.array([0.2110, 0.1800]), False)
 allowed_background = decide(np.array([[0.2371, 0.1900]]), np.array([[0.2535]]), np.array([0.2137, 0.1800]), True)
 allowed_occlusion = decide(np.array([[0.2500, 0.1900]]), np.array([[0.2200]]), np.array([0.2137, 0.1800]), True)
 allowed_new_occlusion = decide(np.array([[0.2700, 0.1900]]), np.array([[0.2200]]), np.array([0.2400, 0.1800]), True)
@@ -359,6 +362,10 @@ print(json.dumps({
     'newCharacterPromptIndex': new_character['worstPromptIndex'],
     'newCharacterSourceDelta': new_character['sourceDelta'],
     'sameAsSource': same_as_source['detected'],
+    'edgeHairRegression': edge_hair_regression['detected'],
+    'edgeHairSourceDelta': edge_hair_regression['sourceDelta'],
+    'belowAbsoluteThreshold': below_absolute_threshold['detected'],
+    'belowNoveltyDelta': below_novelty_delta['detected'],
     'allowedBackground': allowed_background['detected'],
     'allowedOcclusion': allowed_occlusion['detected'],
     'allowedNewOcclusion': allowed_new_occlusion['detected'],
@@ -371,6 +378,10 @@ print(json.dumps({
   assert.equal(result.newCharacterPromptIndex, 1)
   assert.ok(result.newCharacterSourceDelta > 0.05)
   assert.equal(result.sameAsSource, false)
+  assert.equal(result.edgeHairRegression, true)
+  assert.ok(result.edgeHairSourceDelta > 0.015)
+  assert.equal(result.belowAbsoluteThreshold, false)
+  assert.equal(result.belowNoveltyDelta, false)
   assert.equal(result.allowedBackground, false)
   assert.equal(result.allowedOcclusion, true)
   assert.equal(result.allowedNewOcclusion, true)

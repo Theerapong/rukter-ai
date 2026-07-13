@@ -122,6 +122,21 @@ test('keeps Fireworks scene intelligence through bounded product-safe render cue
   assert.doesNotMatch(reflective.prompt, /materialize|retract|extra cases/i)
 })
 
+test('preserves Fireworks gradient and floor depth without inventing props', () => {
+  const layered = compileProductRenderPrompt({
+    environment: 'Adaptive neutral studio with pale cool gradient background and shallow floor plane suggestion.',
+  })
+  const negated = compileProductRenderPrompt({
+    environment: 'Neutral studio with no gradient and without a floor plane.',
+  })
+
+  assert.match(layered.prompt, /Stage: layered neutral gradient studio with a subtle floor plane/)
+  assert.match(layered.prompt, /Background lock: empty and prop-free/)
+  assert.ok(layered.wordCount <= 100)
+  assert.match(negated.prompt, /Stage: clean neutral product studio/)
+  assert.doesNotMatch(negated.prompt, /layered neutral gradient|subtle floor plane/)
+})
+
 test('does not let a negated Product DNA affordance erase an affirmative scene cue', () => {
   const result = compileProductRenderPrompt({
     sceneDynamics: 'A controlled highlight travels across the visible material and settles.',

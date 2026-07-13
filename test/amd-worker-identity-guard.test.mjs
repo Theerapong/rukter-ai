@@ -524,6 +524,7 @@ retry_identity_prompt = namespace['first_attempt_identity_directive']([
 ], True)
 retry_prompt, retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], True)
 product_retry_prompt, product_retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], False)
+edge_retry_prompt, edge_retry_negative = namespace['retry_directives'](locks, ['foreign_edge_intrusion'], False)
 people_prompt, people_negative = namespace['apply_people_policy'](
     'No people or body parts may occlude the product. A model holds the product beside their face.',
     'person, human, warped logo',
@@ -537,6 +538,8 @@ print(json.dumps({
   'retryNegative': retry_negative,
   'productRetryPrompt': product_retry_prompt,
   'productRetryNegative': product_retry_negative,
+  'edgeRetryPrompt': edge_retry_prompt,
+  'edgeRetryNegative': edge_retry_negative,
   'peoplePrompt': people_prompt,
   'peopleNegative': people_negative,
   'indices': namespace['evenly_spaced_frame_indices'](17, 5),
@@ -554,6 +557,11 @@ print(json.dumps({
   assert.doesNotMatch(result.retryNegative, /person|human|hand/i)
   assert.match(result.productRetryNegative, /not present in reference/i)
   assert.doesNotMatch(result.productRetryNegative, /\b(?:face|head|hair|cartoon|anime)\b/i)
+  assert.match(result.edgeRetryPrompt, /reduce camera displacement/i)
+  assert.match(result.edgeRetryPrompt, /restore every frame edge and corner to its source appearance/i)
+  assert.match(result.edgeRetryPrompt, /slab-like surface or plane extending inward from a border/i)
+  assert.match(result.edgeRetryNegative, /foreign disconnected edge object not present in source/i)
+  assert.doesNotMatch(result.edgeRetryPrompt, /pale|bottom-left/i)
   assert.doesNotMatch(result.peoplePrompt, /No people/i)
   assert.match(result.peoplePrompt, /people are allowed/i)
   assert.equal(result.peopleNegative, 'warped logo')

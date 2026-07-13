@@ -91,7 +91,9 @@ FAILURE_RETRY_INSTRUCTIONS = {
     ),
     FAILURE_CODE_COLOR_DISTRIBUTION: "restore the exact source hue and saturation and remove every new foreground or edge color",
     FAILURE_CODE_EDGE_INTRUSION: (
-        "remove the unmatched foreground component entering from the frame edge because it is not present in the source"
+        "reduce camera displacement; restore every frame edge and corner to its source appearance; "
+        "remove each newly generated edge-connected solid region absent from the source, especially any flat "
+        "slab-like surface or plane extending inward from a border"
     ),
 }
 FAILURE_NEGATIVE_TERMS = {

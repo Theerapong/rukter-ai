@@ -34,7 +34,8 @@ test('compiles a short reference-locked I2V motion prompt', () => {
   assert.match(result.prompt, /hold the complete hero frame for 0\.5s/)
   assert.doesNotMatch(result.prompt, /constant-speed/)
   assert.match(result.prompt, /Stage: dark neutral studio/)
-  assert.match(result.prompt, /background reflection and visible material highlight/)
+  assert.match(result.prompt, /Hue\/saturation fixed; luminance varies/)
+  assert.match(result.prompt, /achromatic reflection moves behind product/)
   assert.match(result.prompt, /Background lock: empty and prop-free; nothing enters frame/)
   assert.match(result.prompt, /Product-only frame/)
   assert.doesNotMatch(result.prompt, /then orbit, then zoom/)
@@ -114,7 +115,8 @@ test('keeps Fireworks scene intelligence through bounded product-safe render cue
 
   assert.notEqual(reflective.prompt, atmospheric.prompt)
   assert.match(reflective.prompt, /dark neutral studio/)
-  assert.match(reflective.prompt, /background reflection/)
+  assert.match(reflective.prompt, /Hue\/saturation fixed; luminance varies/)
+  assert.match(reflective.prompt, /achromatic reflection moves behind product/)
   assert.match(atmospheric.prompt, /high-key neutral studio/)
   assert.match(atmospheric.prompt, /background haze/)
   assert.ok(reflective.wordCount <= 100)
@@ -146,7 +148,8 @@ test('does not let a negated Product DNA affordance erase an affirmative scene c
       'surface texture responds to raking light',
     ],
   })
-  assert.match(result.prompt, /background reflection and visible material highlight/)
+  assert.match(result.prompt, /Hue\/saturation fixed; luminance varies/)
+  assert.match(result.prompt, /achromatic reflection moves behind product/)
   assert.doesNotMatch(result.prompt, /flex|articulation/)
 })
 

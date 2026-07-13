@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${CI_API_V4_URL:?CI_API_V4_URL is required}"
-: "${CI_PROJECT_ID:?CI_PROJECT_ID is required}"
-: "${CI_JOB_TOKEN:?CI_JOB_TOKEN is required}"
 : "${CI_COMMIT_SHA:?CI_COMMIT_SHA is required}"
 
 branch="${CI_DEFAULT_BRANCH:-main}"
-branch_json="$(curl -fsS \
-  -H "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-  "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/branches/${branch}")"
-current_sha="$(jq -r '.commit.id // empty' <<<"${branch_json}")"
+current_sha="$(git ls-remote --heads origin "refs/heads/${branch}" | awk 'NR == 1 { print $1 }')"
 
 if [[ -z "${current_sha}" ]]; then
   echo "Could not resolve the current ${branch} SHA; refusing to deploy." >&2

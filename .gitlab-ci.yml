@@ -38,7 +38,7 @@ variables:
   # One-time bridge from the release immediately before the durable drain API.
   # An absent-route fallback is accepted only when this exact SHA is CI_COMMIT_BEFORE_SHA;
   # every later main pipeline fails closed if the drain endpoint is unavailable.
-  DEPLOYMENT_DRAIN_LEGACY_PARENT_SHA: "d285e23d099080ed91fbf33651473b2023bda1c4"
+  DEPLOYMENT_DRAIN_LEGACY_PARENT_SHA: "42b5bc9c964583328dfb04b3628c58cd2e75889b"
 
 node:smoke:
   stage: test

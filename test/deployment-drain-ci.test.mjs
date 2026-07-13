@@ -47,6 +47,7 @@ test('production apply owns one fail-closed drain transaction through AMD bootst
 test('drain scripts require ownership, every queue class, worker evidence, and continuous idle', async () => {
   const control = await readFile(path.join(repoDir, 'scripts/deployment-drain.sh'), 'utf8')
   const wait = await readFile(path.join(repoDir, 'scripts/wait-live-amd-queue-idle.sh'), 'utf8')
+  const mainGuard = await readFile(path.join(repoDir, 'scripts/assert-current-main-sha.sh'), 'utf8')
 
   assert.match(control, /POST \/v1\/deployment-drain\/acquire/)
   assert.match(control, /GET \/v1\/deployment-drain/)
@@ -69,6 +70,8 @@ test('drain scripts require ownership, every queue class, worker evidence, and c
   assert.match(wait, /stable_since/)
   assert.match(wait, /DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY/)
   assert.match(wait, /CI_COMMIT_BEFORE_SHA/)
+  assert.match(mainGuard, /git ls-remote --heads origin/)
+  assert.doesNotMatch(mainGuard, /repository\/branches|JOB-TOKEN/)
 })
 
 test('acquire, strict idle verification, and owned release use the protected API contract', async (t) => {

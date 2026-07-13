@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
 import {
   buildAmdWorkerCloudInit,
@@ -13,6 +14,7 @@ function json(payload, status = 200) {
 }
 
 test('builds cloud-init without placing the worker token in shell commands', () => {
+  const persistentBootstrap = readFileSync(path.join(process.cwd(), 'scripts', 'bootstrap-persistent-amd.sh'), 'utf8')
   const cloudInit = buildAmdWorkerCloudInit({
     workerToken: 'control-secret',
     uploadUrl: 'https://rukter.ai/api/amd-story-assets',
@@ -27,6 +29,8 @@ test('builds cloud-init without placing the worker token in shell commands', () 
   assert.match(environment, /WAN_IDENTITY_CLIP_FALLBACK_THRESHOLD=0\.90/)
   assert.match(environment, /WAN_HUMAN_CONTAMINATION_THRESHOLD=0\.225/)
   assert.match(environment, /WAN_HUMAN_CONTAMINATION_MARGIN=0\.012/)
+  assert.match(environment, /WAN_HUMAN_CONTAMINATION_SOURCE_DELTA=0\.020/)
+  assert.match(persistentBootstrap, /WAN_HUMAN_CONTAMINATION_SOURCE_DELTA=0\.020/)
   assert.match(environment, /WAN_NUM_FRAMES=81/)
   assert.match(environment, /WAN_INFERENCE_STEPS=32/)
   assert.match(environment, /WAN_STORY_INFERENCE_STEP_BUDGET_PER_PASS=120/)

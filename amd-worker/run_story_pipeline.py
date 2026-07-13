@@ -33,6 +33,7 @@ IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_T
 OCR_RETENTION_THRESHOLD = float(os.getenv("WAN_OCR_RETENTION_THRESHOLD", "0.15"))
 HUMAN_CONTAMINATION_THRESHOLD = float(os.getenv("WAN_HUMAN_CONTAMINATION_THRESHOLD", "0.225"))
 HUMAN_CONTAMINATION_MARGIN = float(os.getenv("WAN_HUMAN_CONTAMINATION_MARGIN", "0.012"))
+HUMAN_CONTAMINATION_SOURCE_DELTA = float(os.getenv("WAN_HUMAN_CONTAMINATION_SOURCE_DELTA", "0.020"))
 COLOR_DISTRIBUTION_THRESHOLD = float(os.getenv("WAN_COLOR_DISTRIBUTION_THRESHOLD", "0.20"))
 OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
 SOURCE_MAX_BYTES = int(os.getenv("RUKTER_SOURCE_MAX_BYTES", str(8 * 1024 * 1024)))
@@ -49,15 +50,26 @@ ALLOWED_SOURCE_MIME_TYPES = {
     "image/webp",
 }
 HUMAN_CONTAMINATION_PROMPTS = [
+    "a person or human figure visible anywhere in the frame",
+    "a human face, head, hair, shoulder, or torso entering from a frame edge",
+    "a cartoon, anime, or illustrated human character in the frame",
+    "a human hand, arm, skin, or body part visible in the frame",
+]
+HUMAN_OCCLUSION_PROMPTS = [
     "a human hand covering the product",
     "a human arm or finger in front of the product",
     "a person or body part blocking, touching, or overlapping the product",
     "skin, fingers, fingernails, wrist, or forearm occluding an object",
 ]
 CLEAN_PRODUCT_PROMPTS = [
-    "a product-only studio packshot with no people",
-    "only the source product on a clean background",
-    "a clean commercial product video without hands or body parts",
+    "isolated retail merchandise centered on an empty studio background",
+    "a clean catalog packshot of products",
+    "an undisturbed product display on a plain background",
+]
+ALLOWED_PEOPLE_SAFE_PROMPTS = [
+    "a background person standing behind a fully visible separate retail product",
+    "an unobstructed foreground product with a person farther in the background",
+    "clear depth separation between a complete foreground product and a distant background person",
 ]
 DEFAULT_IDENTITY_LOCKS = (
     "the complete source silhouette and proportions",
@@ -71,15 +83,25 @@ FAILURE_CODE_COLOR_DISTRIBUTION = "product_color_distribution_drift"
 FAILURE_RETRY_INSTRUCTIONS = {
     FAILURE_CODE_CLIP_SIMILARITY: "reduce camera motion and keep the complete source geometry continuously recognizable",
     FAILURE_CODE_OCR_RETENTION: "keep visible logo and packaging text front-facing, stable, and legible",
-    FAILURE_CODE_HUMAN_CONTAMINATION: "remove every person, hand, arm, and body part from the frame",
+    FAILURE_CODE_HUMAN_CONTAMINATION: (
+        "remove every newly introduced realistic or illustrated person, face, head, hair, shoulder, torso, "
+        "hand, arm, and body part from the frame while preserving source artwork"
+    ),
     FAILURE_CODE_COLOR_DISTRIBUTION: "restore the exact source hue and saturation and remove every new foreground or edge color",
 }
 FAILURE_NEGATIVE_TERMS = {
     FAILURE_CODE_CLIP_SIMILARITY: "changed identity, altered geometry, changed component count, product morphing",
     FAILURE_CODE_OCR_RETENTION: "warped logo, changed label, missing text, unreadable text",
-    FAILURE_CODE_HUMAN_CONTAMINATION: "person, human, hand, fingers, arm, skin, wrist, forearm, body part",
+    FAILURE_CODE_HUMAN_CONTAMINATION: (
+        "extra foreground figure not present in reference, foreign person entering frame edge, "
+        "newly added human-shaped subject, intrusive body part not present in reference"
+    ),
     FAILURE_CODE_COLOR_DISTRIBUTION: "recolored product, hue shift, saturation shift, color cast, foreign object, colored artifact",
 }
+PREVENTIVE_HUMAN_NEGATIVE_TERMS = (
+    "extra foreground figure not present in reference, foreign person entering frame edge, "
+    "intrusive body part not present in reference"
+)
 HUMAN_NEGATIVE_PATTERN = re.compile(
     r"\b(?:person|people|human|body|body part|hand|hands|finger|fingers|arm|arms|skin|wrist|forearm|nails|fingernails)\b",
     re.IGNORECASE,
@@ -200,7 +222,7 @@ def retry_directives(identity_locks: list[str], failure_codes: list[str], allow_
         for code in codes
     ]
     if not allow_people and FAILURE_CODE_HUMAN_CONTAMINATION not in codes:
-        negative_terms.append(FAILURE_NEGATIVE_TERMS[FAILURE_CODE_HUMAN_CONTAMINATION])
+        negative_terms.append(PREVENTIVE_HUMAN_NEGATIVE_TERMS)
     prompt = (
         f" Product identity retry. Lock these observed source features: {lock_text}. "
         f"Correct only these local failure modes: {instructions}. Do not redesign or replace any visible product feature."
@@ -398,9 +420,90 @@ def clip_feature_tensor(features, feature_kind: str) -> torch.Tensor:
     )
 
 
-def human_contamination_evidence(sample_features: torch.Tensor, clip_model, clip_processor, allow_people: bool = False) -> dict:
+def human_contamination_decision(
+    human_scores: np.ndarray,
+    clean_scores: np.ndarray,
+    source_human_scores: np.ndarray,
+    allow_people: bool = False,
+) -> dict:
+    frame_indices = np.arange(human_scores.shape[0])
+    frame_clean = clean_scores.max(axis=1)
+    peak_prompt_indices = human_scores.argmax(axis=1)
+    peak_human = human_scores[frame_indices, peak_prompt_indices]
+    peak_source = source_human_scores[peak_prompt_indices]
+    peak_margins = peak_human - frame_clean
+    prompt_deltas = human_scores - source_human_scores[np.newaxis, :]
+    prompt_novelty_risks = np.where(
+        human_scores >= HUMAN_CONTAMINATION_THRESHOLD,
+        prompt_deltas / max(HUMAN_CONTAMINATION_SOURCE_DELTA, 1e-6),
+        -np.inf,
+    )
+    novelty_prompt_indices = prompt_novelty_risks.argmax(axis=1)
+    novelty_risks = prompt_novelty_risks[frame_indices, novelty_prompt_indices]
+    protected_margin_risks = np.where(
+        (peak_human >= HUMAN_CONTAMINATION_THRESHOLD)
+        & (peak_source < HUMAN_CONTAMINATION_THRESHOLD),
+        peak_margins / max(HUMAN_CONTAMINATION_MARGIN, 1e-6),
+        -np.inf,
+    )
+    if allow_people:
+        prompt_margin_risks = np.where(
+            human_scores >= HUMAN_CONTAMINATION_THRESHOLD,
+            (human_scores - frame_clean[:, np.newaxis]) / max(HUMAN_CONTAMINATION_MARGIN, 1e-6),
+            -np.inf,
+        )
+        allowed_prompt_risks = np.where(
+            source_human_scores[np.newaxis, :] < HUMAN_CONTAMINATION_THRESHOLD,
+            prompt_margin_risks,
+            np.minimum(prompt_margin_risks, prompt_novelty_risks),
+        )
+        selected_prompt_indices = allowed_prompt_risks.argmax(axis=1)
+        risks = allowed_prompt_risks[frame_indices, selected_prompt_indices]
+        detected_matches = risks >= 1.0
+    else:
+        novelty_matches = novelty_risks >= 1.0
+        margin_matches = protected_margin_risks >= 1.0
+        detected_matches = novelty_matches | margin_matches
+        use_novelty_prompt = novelty_risks >= protected_margin_risks
+        selected_prompt_indices = np.where(
+            use_novelty_prompt,
+            novelty_prompt_indices,
+            peak_prompt_indices,
+        )
+        risks = np.maximum(protected_margin_risks, novelty_risks)
+    detected_indices = np.flatnonzero(detected_matches)
+    worst_index = (
+        int(detected_indices[np.argmax(risks[detected_indices])])
+        if detected_indices.size
+        else int(np.argmax(risks))
+    )
+    selected_prompt_index = int(selected_prompt_indices[worst_index])
+    human_score = float(human_scores[worst_index, selected_prompt_index])
+    source_score = float(source_human_scores[selected_prompt_index])
+    return {
+        "detected": bool(detected_matches[worst_index]),
+        "worstIndex": worst_index,
+        "worstPromptIndex": selected_prompt_index,
+        "humanScore": human_score,
+        "cleanScore": float(frame_clean[worst_index]),
+        "margin": human_score - float(frame_clean[worst_index]),
+        "sourceScore": source_score,
+        "sourceDelta": human_score - source_score,
+    }
+
+
+def human_contamination_evidence(
+    source_feature: torch.Tensor,
+    sample_features: torch.Tensor,
+    sampled_frame_indices: list[int],
+    clip_model,
+    clip_processor,
+    allow_people: bool = False,
+) -> dict:
+    human_prompts = HUMAN_OCCLUSION_PROMPTS if allow_people else HUMAN_CONTAMINATION_PROMPTS
+    clean_prompts = ALLOWED_PEOPLE_SAFE_PROMPTS if allow_people else CLEAN_PRODUCT_PROMPTS
     text_inputs = clip_processor(
-        text=[*HUMAN_CONTAMINATION_PROMPTS, *CLEAN_PRODUCT_PROMPTS],
+        text=[*human_prompts, *clean_prompts],
         return_tensors="pt",
         padding=True,
         truncation=True,
@@ -409,34 +512,43 @@ def human_contamination_evidence(sample_features: torch.Tensor, clip_model, clip
     with torch.inference_mode():
         text_features = clip_feature_tensor(clip_model.get_text_features(**text_inputs), "text")
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    source_scores = (source_feature @ text_features.T).detach().float().cpu().numpy()[0]
     scores = (sample_features @ text_features.T).detach().float().cpu().numpy()
-    human_count = len(HUMAN_CONTAMINATION_PROMPTS)
+    human_count = len(human_prompts)
+    source_human_scores = source_scores[:human_count]
     human_scores = scores[:, :human_count]
     clean_scores = scores[:, human_count:]
-    frame_human = human_scores.max(axis=1)
-    frame_clean = clean_scores.max(axis=1)
-    margins = frame_human - frame_clean
-    worst_index = int(np.argmax(margins))
-    worst_prompt_index = int(np.argmax(human_scores[worst_index]))
-    human_score = float(frame_human[worst_index])
-    clean_score = float(frame_clean[worst_index])
-    margin = float(margins[worst_index])
-    observed = human_score >= HUMAN_CONTAMINATION_THRESHOLD and margin >= HUMAN_CONTAMINATION_MARGIN
-    # `allowPeople` permits background context only. Contact, overlap, or
-    # occlusion remains a failure because it can hide or alter product identity.
-    detected = observed
+    decision = human_contamination_decision(human_scores, clean_scores, source_human_scores, allow_people)
+    worst_index = decision["worstIndex"]
+    worst_prompt_index = decision["worstPromptIndex"]
+    clean_prompt_index = int(np.argmax(clean_scores[worst_index]))
+    human_score = decision["humanScore"]
+    clean_score = decision["cleanScore"]
+    margin = decision["margin"]
+    source_score = decision["sourceScore"]
+    source_delta = decision["sourceDelta"]
+    # `allowPeople` permits background context only. Its prompt bank and
+    # decision therefore remain contact/occlusion-specific. Product-only shots
+    # also reject newly introduced realistic or illustrated human presence,
+    # compared with the source to preserve legitimate source artwork.
+    detected = decision["detected"]
     return {
         "humanContaminationDetected": bool(detected),
-        "humanContaminationObserved": bool(observed),
+        "humanContaminationObserved": bool(detected),
         "allowPeople": bool(allow_people),
         "humanPolicy": "background_only" if allow_people else "disallowed",
-        "humanContaminationPrompt": HUMAN_CONTAMINATION_PROMPTS[worst_prompt_index],
-        "humanContaminationFrame": worst_index,
+        "humanContaminationPrompt": human_prompts[worst_prompt_index],
+        "humanContaminationCleanPrompt": clean_prompts[clean_prompt_index],
+        "humanContaminationSampleIndex": worst_index,
+        "humanContaminationFrame": sampled_frame_indices[worst_index],
         "humanContaminationScore": round(human_score, 4),
         "humanContaminationCleanScore": round(clean_score, 4),
         "humanContaminationMargin": round(margin, 4),
         "humanContaminationThreshold": HUMAN_CONTAMINATION_THRESHOLD,
         "humanContaminationMarginThreshold": HUMAN_CONTAMINATION_MARGIN,
+        "humanContaminationSourceScore": round(source_score, 4),
+        "humanContaminationSourceDelta": round(source_delta, 4),
+        "humanContaminationSourceDeltaThreshold": HUMAN_CONTAMINATION_SOURCE_DELTA,
     }
 
 
@@ -465,7 +577,14 @@ def identity_evidence(
         features = features / features.norm(dim=-1, keepdim=True)
     sample_features = features[1:]
     similarities = (sample_features @ features[0]).detach().float().cpu().tolist()
-    contamination = human_contamination_evidence(sample_features, clip_model, clip_processor, allow_people=allow_people)
+    contamination = human_contamination_evidence(
+        features[0:1],
+        sample_features,
+        sampled_frame_indices,
+        clip_model,
+        clip_processor,
+        allow_people=allow_people,
+    )
     color_evidence = product_color_evidence(source, samples, COLOR_DISTRIBUTION_THRESHOLD)
     source_ocr = product_ocr_evidence(source)
     sampled_ocr = [product_ocr_evidence(frame) for frame in samples]
@@ -521,6 +640,10 @@ def attempt_evidence(evidence: dict) -> dict:
         "ocrRetentionRequired": evidence.get("ocrRetentionRequired"),
         "humanContaminationDetected": evidence.get("humanContaminationDetected"),
         "humanContaminationObserved": evidence.get("humanContaminationObserved"),
+        "humanContaminationFrame": evidence.get("humanContaminationFrame"),
+        "humanContaminationScore": evidence.get("humanContaminationScore"),
+        "humanContaminationSourceScore": evidence.get("humanContaminationSourceScore"),
+        "humanContaminationSourceDelta": evidence.get("humanContaminationSourceDelta"),
         "colorDistributionMin": evidence.get("colorDistributionMin"),
         "colorDistributionRequired": evidence.get("colorDistributionRequired"),
         "allowPeople": evidence.get("allowPeople"),

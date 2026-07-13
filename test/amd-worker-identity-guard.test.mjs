@@ -223,13 +223,89 @@ test('worker rejects human hands and body parts as product-story contamination',
   const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
   const storySource = readFileSync(path.join(repoRoot, 'lib', 'product-story.mjs'), 'utf8')
   assert.match(pipeline, /HUMAN_CONTAMINATION_PROMPTS/)
+  assert.match(pipeline, /HUMAN_OCCLUSION_PROMPTS/)
   assert.match(pipeline, /human_contamination_evidence/)
+  assert.match(pipeline, /human_contamination_decision/)
   assert.match(pipeline, /humanContaminationDetected/)
   assert.match(pipeline, /FAILURE_CODE_HUMAN_CONTAMINATION/)
-  assert.match(pipeline, /detected = observed/)
+  assert.match(pipeline, /detected = decision\["detected"\]/)
+  assert.match(pipeline, /humanContaminationSourceDelta/)
   assert.match(pipeline, /"humanPolicy": "background_only"/)
   assert.match(storySource, /Product-centered commercial frame with no people/)
   assert.match(storySource, /no hands, no fingers, no arms, no body parts/)
+})
+
+test('detects newly introduced human presence relative to the source without rejecting allowed background people', { skip: skipReason }, () => {
+  const result = runWorkerScript(`
+import __future__, ast, json, numpy as np
+source = open('amd-worker/run_story_pipeline.py', encoding='utf-8').read()
+tree = ast.parse(source)
+selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'human_contamination_decision']
+namespace = {
+    'np': np,
+    'HUMAN_CONTAMINATION_THRESHOLD': 0.225,
+    'HUMAN_CONTAMINATION_MARGIN': 0.012,
+    'HUMAN_CONTAMINATION_SOURCE_DELTA': 0.020,
+}
+module = ast.Module(body=selected, type_ignores=[])
+exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
+decide = namespace['human_contamination_decision']
+new_character = decide(
+    np.array([[0.2000, 0.1900], [0.2350, 0.2371]]),
+    np.array([[0.1400], [0.2535]]),
+    np.array([0.2300, 0.1800]),
+    False,
+)
+same_as_source = decide(np.array([[0.2500, 0.1900]]), np.array([[0.2000]]), np.array([0.2490, 0.1800]), False)
+allowed_background = decide(np.array([[0.2371, 0.1900]]), np.array([[0.2535]]), np.array([0.2137, 0.1800]), True)
+allowed_occlusion = decide(np.array([[0.2500, 0.1900]]), np.array([[0.2200]]), np.array([0.2137, 0.1800]), True)
+allowed_new_occlusion = decide(np.array([[0.2700, 0.1900]]), np.array([[0.2200]]), np.array([0.2400, 0.1800]), True)
+allowed_unchanged_source = decide(np.array([[0.2410, 0.1900]]), np.array([[0.2000]]), np.array([0.2400, 0.1800]), True)
+print(json.dumps({
+    'newCharacter': new_character['detected'],
+    'newCharacterIndex': new_character['worstIndex'],
+    'newCharacterPromptIndex': new_character['worstPromptIndex'],
+    'newCharacterSourceDelta': new_character['sourceDelta'],
+    'sameAsSource': same_as_source['detected'],
+    'allowedBackground': allowed_background['detected'],
+    'allowedOcclusion': allowed_occlusion['detected'],
+    'allowedNewOcclusion': allowed_new_occlusion['detected'],
+    'allowedUnchangedSource': allowed_unchanged_source['detected'],
+}))
+`)
+
+  assert.equal(result.newCharacter, true)
+  assert.equal(result.newCharacterIndex, 1)
+  assert.equal(result.newCharacterPromptIndex, 1)
+  assert.ok(result.newCharacterSourceDelta > 0.05)
+  assert.equal(result.sameAsSource, false)
+  assert.equal(result.allowedBackground, false)
+  assert.equal(result.allowedOcclusion, true)
+  assert.equal(result.allowedNewOcclusion, true)
+  assert.equal(result.allowedUnchangedSource, false)
+})
+
+test('uses positive-only clean prompts and covers illustrated people entering from frame edges', () => {
+  const pipeline = readFileSync(path.join(repoRoot, 'amd-worker', 'run_story_pipeline.py'), 'utf8')
+  const cleanBank = pipeline.slice(
+    pipeline.indexOf('CLEAN_PRODUCT_PROMPTS = ['),
+    pipeline.indexOf('ALLOWED_PEOPLE_SAFE_PROMPTS ='),
+  )
+  const allowedPeopleSafeBank = pipeline.slice(
+    pipeline.indexOf('ALLOWED_PEOPLE_SAFE_PROMPTS = ['),
+    pipeline.indexOf('DEFAULT_IDENTITY_LOCKS ='),
+  )
+  const presenceBank = pipeline.slice(
+    pipeline.indexOf('HUMAN_CONTAMINATION_PROMPTS = ['),
+    pipeline.indexOf('HUMAN_OCCLUSION_PROMPTS ='),
+  )
+
+  assert.doesNotMatch(cleanBank, /\b(?:person|people|human|hand|body|face|head|character)\b/i)
+  assert.match(allowedPeopleSafeBank, /behind.*fully visible.*separate/i)
+  assert.match(allowedPeopleSafeBank, /unobstructed.*foreground.*farther.*background/i)
+  assert.doesNotMatch(allowedPeopleSafeBank, /\b(?:not|non|touch|touching|overlap|overlapping|blocking|occlusion)\b/i)
+  assert.match(presenceBank, /cartoon.*anime.*illustrated/i)
+  assert.match(presenceBank, /face.*head.*hair.*shoulder.*torso.*frame edge/i)
 })
 
 test('parses rocm-smi JSON telemetry into bounded GPU metrics', () => {
@@ -325,7 +401,7 @@ tree = ast.parse(source)
 names = {
   'DEFAULT_IDENTITY_LOCKS', 'FAILURE_CODE_CLIP_SIMILARITY', 'FAILURE_CODE_OCR_RETENTION',
   'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_CODE_COLOR_DISTRIBUTION',
-  'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS',
+  'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS', 'PREVENTIVE_HUMAN_NEGATIVE_TERMS',
   'HUMAN_NEGATIVE_PATTERN', 'HUMAN_PROHIBITION_PATTERN', 'normalized_identity_locks',
   'retry_directives', 'apply_people_policy', 'evenly_spaced_frame_indices',
 }
@@ -344,6 +420,7 @@ namespace = {}
 exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
 locks = namespace['normalized_identity_locks']({'identityLocks': ['amber glass bottle', 'black dropper cap']})
 retry_prompt, retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], True)
+product_retry_prompt, product_retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], False)
 people_prompt, people_negative = namespace['apply_people_policy'](
     'No people or body parts may occlude the product. A model holds the product beside their face.',
     'person, human, warped logo',
@@ -353,6 +430,8 @@ print(json.dumps({
   'locks': locks,
   'retryPrompt': retry_prompt,
   'retryNegative': retry_negative,
+  'productRetryPrompt': product_retry_prompt,
+  'productRetryNegative': product_retry_negative,
   'peoplePrompt': people_prompt,
   'peopleNegative': people_negative,
   'indices': namespace['evenly_spaced_frame_indices'](17, 5),
@@ -363,6 +442,8 @@ print(json.dumps({
   assert.match(result.retryPrompt, /amber glass bottle/)
   assert.match(result.retryPrompt, /packaging text/)
   assert.doesNotMatch(result.retryNegative, /person|human|hand/i)
+  assert.match(result.productRetryNegative, /not present in reference/i)
+  assert.doesNotMatch(result.productRetryNegative, /\b(?:face|head|hair|cartoon|anime)\b/i)
   assert.doesNotMatch(result.peoplePrompt, /No people/i)
   assert.match(result.peoplePrompt, /people are allowed/i)
   assert.equal(result.peopleNegative, 'warped logo')
@@ -376,7 +457,7 @@ test('samples five frames, preserves the full source, and applies per-shot peopl
   assert.match(pipeline, /ImageOps\.contain/)
   assert.doesNotMatch(pipeline, /def resize_cover/)
   assert.match(pipeline, /allow_people = shot\.get\("allowPeople"\) is True/)
-  assert.match(pipeline, /detected = observed/)
+  assert.match(pipeline, /detected = decision\["detected"\]/)
   assert.match(pipeline, /HUMAN_PROHIBITION_PATTERN\.sub/)
 })
 

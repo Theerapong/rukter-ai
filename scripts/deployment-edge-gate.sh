@@ -139,12 +139,12 @@ expression_with_header_value() {
   header_key="$(header_key_for_owner "${owner}")"
   header_name="$(printf '%s' "${header_key}" | tr '[:upper:]' '[:lower:]')"
   # Keep source reads available to the already-admitted AMD worker without a
-  # paid-plan regex. Raw and normalized paths must agree, the path must be one
-  # UUID-shaped filename segment, and encoded/path traversal characters are
-  # forbidden before the request is allowed to reach the origin.
-  upload_source_exemption='(raw.http.request.uri.path eq http.request.uri.path and starts_with(raw.http.request.uri.path, "/uploads/") and len(raw.http.request.uri.path) in {49 50} and raw.http.request.uri.path.extension in {"png" "jpg" "webp" "avif" "gif" "mp4"} and substring(raw.http.request.uri.path, 17, 18) eq "-" and substring(raw.http.request.uri.path, 22, 23) eq "-" and substring(raw.http.request.uri.path, 27, 28) eq "-" and substring(raw.http.request.uri.path, 32, 33) eq "-" and substring(raw.http.request.uri.path, 45, 46) eq "." and not (substring(raw.http.request.uri.path, 9) contains "/") and not (substring(raw.http.request.uri.path, 9) contains "%") and not (substring(raw.http.request.uri.path, 9) contains "\\") and not (substring(raw.http.request.uri.path, 9) contains ".."))'
-  amd_worker_source_exemption='(raw.http.request.uri.path eq http.request.uri.path and raw.http.request.uri.path in {"/amd-worker/bootstrap.sh" "/amd-worker/app.py" "/amd-worker/gpu_telemetry.py" "/amd-worker/identity_guard.py" "/amd-worker/requirements.txt" "/amd-worker/run_story_pipeline.py" "/amd-worker/run_story_pipeline.sh"})'
-  printf '(http.host in {"%s" "www.%s"} and http.request.timestamp.sec lt %s and not any(http.request.headers["%s"][*] eq "%s") and not ((http.request.method in {"GET" "HEAD"}) and (%s or %s)) and not (http.request.method eq "POST" and raw.http.request.uri.path eq http.request.uri.path and raw.http.request.uri.path eq "/api/amd-story-assets") and not (http.request.method eq "POST" and raw.http.request.uri.path eq http.request.uri.path and raw.http.request.uri.path eq "/api/story-presence"))' \
+  # paid-plan regex. Cloudflare's WAF API accepts normalized URI fields here;
+  # the path must be one UUID-shaped filename segment, and encoded/path
+  # traversal characters are forbidden before the request reaches the origin.
+  upload_source_exemption='(starts_with(http.request.uri.path, "/uploads/") and len(http.request.uri.path) in {49 50} and http.request.uri.path.extension in {"png" "jpg" "webp" "avif" "gif" "mp4"} and substring(http.request.uri.path, 17, 18) eq "-" and substring(http.request.uri.path, 22, 23) eq "-" and substring(http.request.uri.path, 27, 28) eq "-" and substring(http.request.uri.path, 32, 33) eq "-" and substring(http.request.uri.path, 45, 46) eq "." and not (substring(http.request.uri.path, 9) contains "/") and not (substring(http.request.uri.path, 9) contains "%") and not (substring(http.request.uri.path, 9) contains "\\") and not (substring(http.request.uri.path, 9) contains ".."))'
+  amd_worker_source_exemption='(http.request.uri.path in {"/amd-worker/bootstrap.sh" "/amd-worker/app.py" "/amd-worker/gpu_telemetry.py" "/amd-worker/identity_guard.py" "/amd-worker/requirements.txt" "/amd-worker/run_story_pipeline.py" "/amd-worker/run_story_pipeline.sh"})'
+  printf '(http.host in {"%s" "www.%s"} and http.request.timestamp.sec lt %s and not any(http.request.headers["%s"][*] eq "%s") and not ((http.request.method in {"GET" "HEAD"}) and (%s or %s)) and not (http.request.method eq "POST" and http.request.uri.path eq "/api/amd-story-assets") and not (http.request.method eq "POST" and http.request.uri.path eq "/api/story-presence"))' \
     "${zone_name}" "${zone_name}" "${expires_epoch}" "${header_name}" "${header_value}" \
     "${upload_source_exemption}" "${amd_worker_source_exemption}"
 }
@@ -333,9 +333,17 @@ cloudflare_failure() {
   local operation="$1"
   local http_code="$2"
   local response_file="$3"
-  local codes
+  local codes details
   codes="$(jq -r '[.errors[]?.code | tostring] | join(",")' "${response_file}" 2>/dev/null || true)"
   echo "Cloudflare ${operation} failed (HTTP ${http_code}${codes:+; error codes ${codes}})." >&2
+  details="$(jq -r '(.errors // [])[]? | .message // empty' "${response_file}" 2>/dev/null \
+    | sed -E 's/[a-f0-9]{64}/[redacted-64-hex]/g; s/cfut_[A-Za-z0-9._~-]+/[redacted-token]/g' \
+    | sed -n '1,8p' || true)"
+  if [[ -n "${details}" ]]; then
+    while IFS= read -r detail; do
+      [[ -n "${detail}" ]] && echo "Cloudflare ${operation} detail: ${detail}" >&2
+    done <<<"${details}"
+  fi
 }
 
 find_zone_id() {

@@ -158,7 +158,7 @@ test('Cloudflare gate never mutates the App Platform spec or Terraform ingress',
   assert.match(edge, /api\.cloudflare\.com\/client\/v4/)
 })
 
-test('production headers stay private and every continuity exemption is raw-path exact', async () => {
+test('production headers stay private and every continuity exemption stays Cloudflare-compatible', async () => {
   const edge = await readFile(path.join(repoDir, 'scripts/deployment-edge-gate.sh'), 'utf8')
   const drain = await readFile(path.join(repoDir, 'scripts/deployment-drain.sh'), 'utf8')
   const wait = await readFile(path.join(repoDir, 'scripts/wait-live-amd-queue-idle.sh'), 'utf8')
@@ -174,19 +174,19 @@ test('production headers stay private and every continuity exemption is raw-path
     assert.match(source, /--header "@\$\{/)
   }
   assert.doesNotMatch(expressionBuilder, /\bmatches\b/)
-  assert.doesNotMatch(expressionBuilder, /starts_with\(http\.request\.uri\.path, "\/uploads\/"\)/)
-  assert.match(expressionBuilder, /raw\.http\.request\.uri\.path eq http\.request\.uri\.path/)
-  assert.match(expressionBuilder, /len\(raw\.http\.request\.uri\.path\) in \{49 50\}/)
-  assert.match(expressionBuilder, /raw\.http\.request\.uri\.path\.extension in \{"png" "jpg" "webp" "avif" "gif" "mp4"\}/)
-  assert.match(expressionBuilder, /substring\(raw\.http\.request\.uri\.path, 9\) contains "\/"/)
-  assert.match(expressionBuilder, /substring\(raw\.http\.request\.uri\.path, 9\) contains "%"/)
-  assert.ok(expressionBuilder.includes('substring(raw.http.request.uri.path, 9) contains "\\\\"'))
-  assert.match(expressionBuilder, /substring\(raw\.http\.request\.uri\.path, 9\) contains "\.\."/)
+  assert.doesNotMatch(expressionBuilder, /raw\.http\.request\.uri\.path/)
+  assert.match(expressionBuilder, /starts_with\(http\.request\.uri\.path, "\/uploads\/"\)/)
+  assert.match(expressionBuilder, /len\(http\.request\.uri\.path\) in \{49 50\}/)
+  assert.match(expressionBuilder, /http\.request\.uri\.path\.extension in \{"png" "jpg" "webp" "avif" "gif" "mp4"\}/)
+  assert.match(expressionBuilder, /substring\(http\.request\.uri\.path, 9\) contains "\/"/)
+  assert.match(expressionBuilder, /substring\(http\.request\.uri\.path, 9\) contains "%"/)
+  assert.ok(expressionBuilder.includes('substring(http.request.uri.path, 9) contains "\\\\"'))
+  assert.match(expressionBuilder, /substring\(http\.request\.uri\.path, 9\) contains "\.\."/)
   assert.doesNotMatch(expressionBuilder, /starts_with\([^\n]*\/amd-worker\//)
   for (const workerFile of ['bootstrap.sh', 'app.py', 'gpu_telemetry.py', 'identity_guard.py', 'requirements.txt', 'run_story_pipeline.py', 'run_story_pipeline.sh']) {
     assert.match(expressionBuilder, new RegExp(`"/amd-worker/${workerFile.replaceAll('.', '\\.') }"`))
   }
-  assert.match(expressionBuilder, /http\.request\.method eq "POST" and raw\.http\.request\.uri\.path eq http\.request\.uri\.path and raw\.http\.request\.uri\.path eq "\/api\/story-presence"/)
+  assert.match(expressionBuilder, /http\.request\.method eq "POST" and http\.request\.uri\.path eq "\/api\/story-presence"/)
   assert.doesNotMatch(expressionBuilder, /http\.request\.method eq "GET"[^\n]*"\/api\/story-presence"/)
   assert.match(edge, /local args=\(--path-as-is/)
   assert.match(edge, /\/uploads\/\.\.\/api\/story-queue/)

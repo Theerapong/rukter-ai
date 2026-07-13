@@ -85,11 +85,11 @@ const workerSourcePaths = new Set([
 ])
 
 function uploadSourceExemptionExpression() {
-  return '(raw.http.request.uri.path eq http.request.uri.path and starts_with(raw.http.request.uri.path, "/uploads/") and len(raw.http.request.uri.path) in {49 50} and raw.http.request.uri.path.extension in {"png" "jpg" "webp" "avif" "gif" "mp4"} and substring(raw.http.request.uri.path, 17, 18) eq "-" and substring(raw.http.request.uri.path, 22, 23) eq "-" and substring(raw.http.request.uri.path, 27, 28) eq "-" and substring(raw.http.request.uri.path, 32, 33) eq "-" and substring(raw.http.request.uri.path, 45, 46) eq "." and not (substring(raw.http.request.uri.path, 9) contains "/") and not (substring(raw.http.request.uri.path, 9) contains "%") and not (substring(raw.http.request.uri.path, 9) contains "\\\\") and not (substring(raw.http.request.uri.path, 9) contains ".."))'
+  return '(starts_with(http.request.uri.path, "/uploads/") and len(http.request.uri.path) in {49 50} and http.request.uri.path.extension in {"png" "jpg" "webp" "avif" "gif" "mp4"} and substring(http.request.uri.path, 17, 18) eq "-" and substring(http.request.uri.path, 22, 23) eq "-" and substring(http.request.uri.path, 27, 28) eq "-" and substring(http.request.uri.path, 32, 33) eq "-" and substring(http.request.uri.path, 45, 46) eq "." and not (substring(http.request.uri.path, 9) contains "/") and not (substring(http.request.uri.path, 9) contains "%") and not (substring(http.request.uri.path, 9) contains "\\\\") and not (substring(http.request.uri.path, 9) contains ".."))'
 }
 
 function amdWorkerSourceExemptionExpression() {
-  return '(raw.http.request.uri.path eq http.request.uri.path and raw.http.request.uri.path in {"/amd-worker/bootstrap.sh" "/amd-worker/app.py" "/amd-worker/gpu_telemetry.py" "/amd-worker/identity_guard.py" "/amd-worker/requirements.txt" "/amd-worker/run_story_pipeline.py" "/amd-worker/run_story_pipeline.sh"})'
+  return '(http.request.uri.path in {"/amd-worker/bootstrap.sh" "/amd-worker/app.py" "/amd-worker/gpu_telemetry.py" "/amd-worker/identity_guard.py" "/amd-worker/requirements.txt" "/amd-worker/run_story_pipeline.py" "/amd-worker/run_story_pipeline.sh"})'
 }
 
 function gateRule(owner, expires, id = 'c'.repeat(32), signingToken = token) {
@@ -98,7 +98,7 @@ function gateRule(owner, expires, id = 'c'.repeat(32), signingToken = token) {
   return {
     id,
     action: 'block',
-    expression: `(http.host in {"${zoneName}" "www.${zoneName}"} and http.request.timestamp.sec lt ${expires} and not any(http.request.headers["${headerName}"][*] eq "${headerValue}") and not ((http.request.method in {"GET" "HEAD"}) and (${uploadSourceExemptionExpression()} or ${amdWorkerSourceExemptionExpression()})) and not (http.request.method eq "POST" and raw.http.request.uri.path eq http.request.uri.path and raw.http.request.uri.path eq "/api/amd-story-assets") and not (http.request.method eq "POST" and raw.http.request.uri.path eq http.request.uri.path and raw.http.request.uri.path eq "/api/story-presence"))`,
+    expression: `(http.host in {"${zoneName}" "www.${zoneName}"} and http.request.timestamp.sec lt ${expires} and not any(http.request.headers["${headerName}"][*] eq "${headerValue}") and not ((http.request.method in {"GET" "HEAD"}) and (${uploadSourceExemptionExpression()} or ${amdWorkerSourceExemptionExpression()})) and not (http.request.method eq "POST" and http.request.uri.path eq "/api/amd-story-assets") and not (http.request.method eq "POST" and http.request.uri.path eq "/api/story-presence"))`,
     description: `Rukter deploy gate owner=${owner} expires=${expires}`,
     ref,
     enabled: true,
@@ -106,10 +106,11 @@ function gateRule(owner, expires, id = 'c'.repeat(32), signingToken = token) {
 }
 
 function isSafeUploadSourcePath(rawPath, normalizedPath) {
-  if (rawPath !== normalizedPath || !rawPath.startsWith('/uploads/') || ![49, 50].includes(Buffer.byteLength(rawPath))) return false
-  if (!['png', 'jpg', 'webp', 'avif', 'gif', 'mp4'].includes(rawPath.split('.').at(-1))) return false
-  if (rawPath[17] !== '-' || rawPath[22] !== '-' || rawPath[27] !== '-' || rawPath[32] !== '-' || rawPath[45] !== '.') return false
-  const fileName = rawPath.slice(9)
+  const path = normalizedPath
+  if (!path.startsWith('/uploads/') || ![49, 50].includes(Buffer.byteLength(path))) return false
+  if (!['png', 'jpg', 'webp', 'avif', 'gif', 'mp4'].includes(path.split('.').at(-1))) return false
+  if (path[17] !== '-' || path[22] !== '-' || path[27] !== '-' || path[32] !== '-' || path[45] !== '.') return false
+  const fileName = path.slice(9)
   return !fileName.includes('/') && !fileName.includes('%') && !fileName.includes('\\') && !fileName.includes('..')
 }
 
@@ -286,9 +287,9 @@ async function startCloudflareMock(t, options = {}) {
     if (gate) {
       const sourceRead = req.method === 'GET' || req.method === 'HEAD'
       const uploadsExempt = sourceRead && isSafeUploadSourcePath(rawPath, normalizedPath)
-      const workerSourceExempt = sourceRead && rawPath === normalizedPath && workerSourcePaths.has(rawPath)
-      const assetUploadExempt = req.method === 'POST' && rawPath === normalizedPath && rawPath === '/api/amd-story-assets'
-      const presenceExempt = req.method === 'POST' && rawPath === normalizedPath && rawPath === '/api/story-presence'
+      const workerSourceExempt = sourceRead && workerSourcePaths.has(normalizedPath)
+      const assetUploadExempt = req.method === 'POST' && normalizedPath === '/api/amd-story-assets'
+      const presenceExempt = req.method === 'POST' && normalizedPath === '/api/story-presence'
       if (!uploadsExempt && !workerSourceExempt && !assetUploadExempt && !presenceExempt && !gateBypassMatches(req, gate)) {
         sendJson(res, 403, { error: 'cloudflare gate' })
         return

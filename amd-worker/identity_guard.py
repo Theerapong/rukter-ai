@@ -14,6 +14,7 @@ PRODUCT_COMPONENT_MIN_BBOX_RATIO = float(os.getenv("WAN_PRODUCT_COMPONENT_MIN_BB
 PRODUCT_TOKEN_OVERLAP_MIN = float(os.getenv("WAN_PRODUCT_TOKEN_OVERLAP_MIN", "0.08"))
 PRODUCT_COLOR_MIN_CHROMATIC_RATIO = float(os.getenv("WAN_COLOR_MIN_CHROMATIC_RATIO", "0.015"))
 PRODUCT_COLOR_MIN_PIXELS = int(os.getenv("WAN_COLOR_MIN_PIXELS", "50"))
+PRODUCT_COLOR_DISTRIBUTION_THRESHOLD = float(os.getenv("WAN_COLOR_DISTRIBUTION_THRESHOLD", "0.48"))
 PRODUCT_EDGE_INTRUSION_THRESHOLD = float(os.getenv("WAN_EDGE_INTRUSION_THRESHOLD", "0.0025"))
 PRODUCT_EDGE_COMPONENT_MIN_AREA_RATIO = 0.0005
 PRODUCT_EDGE_OUTER_CENTROID_RATIO = 0.20
@@ -156,7 +157,11 @@ def product_color_signature(image: Image.Image) -> tuple[np.ndarray | None, floa
     return histogram, chromatic_ratio
 
 
-def product_color_evidence(source: Image.Image, samples: list[Image.Image], threshold: float = 0.20) -> dict:
+def product_color_evidence(
+    source: Image.Image,
+    samples: list[Image.Image],
+    threshold: float = PRODUCT_COLOR_DISTRIBUTION_THRESHOLD,
+) -> dict:
     source_signature, source_ratio = product_color_signature(source)
     required = source_signature is not None
     similarities: list[float] = []

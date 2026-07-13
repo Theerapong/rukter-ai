@@ -123,11 +123,13 @@ draw.ellipse((0, 120, 90, 260), fill=(220, 150, 120))
 print(json.dumps({
   'preserved': product_color_evidence(source, [preserved], 0.20),
   'drifted': product_color_evidence(source, [drifted], 0.20),
+  'defaultThreshold': product_color_evidence(source, [preserved])['colorDistributionThreshold'],
 }))
 `)
   assert.equal(result.preserved.colorDistributionRequired, true)
   assert.ok(result.preserved.colorDistributionMin >= 0.20)
   assert.ok(result.drifted.colorDistributionMin < 0.20)
+  assert.equal(result.defaultThreshold, 0.48)
 })
 
 test('detects a disconnected foreign object entering from a frame edge', { skip: skipReason }, () => {
@@ -252,6 +254,7 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /identity_source = resize_contain\(source_image, width, height, trim_background=False\)/)
   assert.match(pipeline, /identity_evidence\(identity_source, frames/)
   assert.match(pipeline, /product_color_distribution_drift/)
+  assert.match(pipeline, /WAN_COLOR_DISTRIBUTION_THRESHOLD", "0\.48"/)
   assert.match(pipeline, /product_color_evidence\(source, samples, COLOR_DISTRIBUTION_THRESHOLD\)/)
   assert.match(pipeline, /foreign_edge_intrusion/)
   assert.match(pipeline, /edge_intrusion_evidence\(source, samples, EDGE_INTRUSION_THRESHOLD\)/)

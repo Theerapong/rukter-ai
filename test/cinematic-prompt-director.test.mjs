@@ -116,3 +116,16 @@ test('keeps Fireworks scene intelligence through bounded product-safe render cue
   assert.ok(atmospheric.wordCount <= 100)
   assert.doesNotMatch(reflective.prompt, /materialize|retract|extra cases/i)
 })
+
+test('does not let a negated Product DNA affordance erase an affirmative scene cue', () => {
+  const result = compileProductRenderPrompt({
+    sceneDynamics: 'A controlled highlight travels across the visible material and settles.',
+    motionAffordances: [
+      'static object suitable for camera travel',
+      'no visible flex points or articulation',
+      'surface texture responds to raking light',
+    ],
+  })
+  assert.match(result.prompt, /background reflection and visible material highlight/)
+  assert.doesNotMatch(result.prompt, /flex|articulation/)
+})

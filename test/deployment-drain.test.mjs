@@ -1,8 +1,57 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const server = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+
+function admittedWorkloadHarness() {
+  const start = server.indexOf('function responseIsTerminal')
+  const end = server.indexOf('\nfunction normalizeGpuTelemetry', start)
+  assert.ok(start >= 0 && end > start, 'admission functions must remain extractable')
+  const admissionFunctions = server.slice(start, end)
+  return Function(`
+    let activeAdmittedRequests = 0
+    let lastAdmissionActivityAtMs = 0
+    const deploymentDrainCache = null
+    const baseAmdQueueSnapshot = () => ({})
+    const localDeploymentDrainLocked = () => false
+    const inspectDurableDeploymentDrain = async () => ({ active: false })
+    const deploymentDrainStatus = () => ({ active: false })
+    const rejectDeploymentDrain = () => { throw new Error('unexpected drain rejection') }
+    ${admissionFunctions}
+    return {
+      run: admitUserWorkload,
+      activeCount: () => activeAdmittedRequests,
+    }
+  `)()
+}
+
+class MockResponse extends EventEmitter {
+  constructor() {
+    super()
+    this.writableEnded = false
+    this.writableFinished = false
+    this.destroyed = false
+    this.closed = false
+  }
+
+  finish() {
+    this.writableEnded = true
+    this.writableFinished = true
+    this.emit('finish')
+  }
+
+  close() {
+    this.destroyed = true
+    this.closed = true
+    this.emit('close')
+  }
+
+  destroy() {
+    this.close()
+  }
+}
 
 test('deployment drain exposes protected owned control routes and privacy-safe public state', () => {
   assert.match(server, /\/v1\/deployment-drain\/acquire/)
@@ -38,6 +87,45 @@ test('new workload routes require admission while completion and cleanup routes 
   assert.doesNotMatch(server.slice(approvalRoute, approvalRoute + 300), /admitUserWorkload/)
   const releaseRoute = server.indexOf("const releaseStoryMatch = url.pathname.match", server.indexOf('const server = http.createServer'))
   assert.doesNotMatch(server.slice(releaseRoute, releaseRoute + 300), /admitUserWorkload/)
+})
+
+test('admission releases only after both handler and response settle in either order', async () => {
+  const admission = admittedWorkloadHarness()
+  const response = new MockResponse()
+  let settleHandler
+  const handlerPending = new Promise((resolve) => {
+    settleHandler = resolve
+  })
+
+  const admitted = admission.run({}, response, () => handlerPending)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(admission.activeCount(), 1)
+  assert.equal(response.listenerCount('close'), 1)
+  assert.equal(response.listenerCount('finish'), 1)
+
+  response.close()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(admission.activeCount(), 1, 'socket completion must not release work still running upstream')
+
+  settleHandler()
+  assert.equal(await admitted, true)
+  assert.equal(admission.activeCount(), 0, 'handler settlement releases after a prior response close')
+
+  const streamingResponse = new MockResponse()
+  const streamingAdmission = admission.run({}, streamingResponse, async () => {})
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(admission.activeCount(), 1, 'handler completion must not release a response still streaming')
+  streamingResponse.finish()
+  assert.equal(await streamingAdmission, true)
+  assert.equal(admission.activeCount(), 0, 'response finish releases after prior handler settlement')
+
+  const rejectedResponse = new MockResponse()
+  await assert.rejects(
+    admission.run({}, rejectedResponse, async () => { throw new Error('handler failed') }),
+    /handler failed/,
+  )
+  assert.equal(rejectedResponse.destroyed, true, 'an unexpected no-response rejection explicitly closes the response')
+  assert.equal(admission.activeCount(), 0, 'handler rejection also releases admission through finally')
 })
 
 test('deployment readiness requires queue, admission, quiet-window, and worker-process evidence', () => {

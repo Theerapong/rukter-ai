@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "${script_dir}/assert-production-targets.sh"
+
 : "${AMD_GPU_DIGITALOCEAN_TOKEN:?AMD_GPU_DIGITALOCEAN_TOKEN is required}"
 : "${AMD_GPU_ORCHESTRATOR_TOKEN:?AMD_GPU_ORCHESTRATOR_TOKEN is required}"
 
@@ -26,18 +29,36 @@ do_api() {
   local path="$1"
   local method="${2:-GET}"
   local body="${3:-}"
+  local header_file curl_status
+  header_file="$(mktemp "${TMPDIR:-/tmp}/rukter-do-headers.XXXXXX")"
+  chmod 600 "${header_file}"
+  {
+    printf 'Accept: application/json\n'
+    printf 'Authorization: Bearer %s\n' "${AMD_GPU_DIGITALOCEAN_TOKEN}"
+    if [[ -n "${body}" ]]; then
+      printf 'Content-Type: application/json\n'
+    fi
+  } > "${header_file}"
   local args=(
     -fsS
-    -H "Accept: application/json"
-    -H "Authorization: Bearer ${AMD_GPU_DIGITALOCEAN_TOKEN}"
+    --header "@${header_file}"
   )
   if [[ "${method}" != "GET" ]]; then
     args+=(-X "${method}")
   fi
   if [[ -n "${body}" ]]; then
-    args+=(-H "Content-Type: application/json" --data "${body}")
+    if printf '%s' "${body}" | curl "${args[@]}" --data-binary @- "${api_url}${path}"; then
+      curl_status=0
+    else
+      curl_status=$?
+    fi
+  elif curl "${args[@]}" "${api_url}${path}"; then
+    curl_status=0
+  else
+    curl_status=$?
   fi
-  curl "${args[@]}" "${api_url}${path}"
+  rm -f "${header_file}"
+  return "${curl_status}"
 }
 
 resolve_ssh_key_ref() {

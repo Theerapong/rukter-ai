@@ -33,6 +33,8 @@ The production app at `https://rukter.ai` currently opens directly into Product 
 7. Wan 2.2 clips render on ROCm, CLIP/OCR checks verify product identity, and the final accepted result is composed as an MP4.
 8. The UI exposes capacity checks, queue state, approval state, worker/GPU state, logs, identity evidence, and export actions.
 
+The header also links to a read-only [GPU Status monitor](https://rukter.ai/gpu-status.html). It polls the persistent MI300X worker every 10 seconds and shows ROCm utilization, VRAM, temperature, power, queue depth, anonymous active sessions, and active GPU jobs. It never starts, stops, releases, or reconfigures the worker.
+
 ## AMD Compute Usage
 
 AMD Cinematic is the required compute-evidence path for judging.
@@ -111,6 +113,8 @@ npm start
 
 The AMD worker must be reachable from the public internet because it downloads source images from the app and uploads MP4 output back to `/api/amd-story-assets`. Local-only AMD Cinematic is useful for control-plane testing, but a real render needs a public app URL, a scoped DigitalOcean/AMD Developer Cloud token, a registered SSH key, and the protected worker/orchestrator bearer token.
 
+Production CI pins `AMD_GPU_WORKER_SOURCE_BASE_URL=https://rukter.ai/amd-worker` so the persistent worker executes only code served by this deployment, and pins `AMD_GPU_ORCHESTRATOR_URL=http://127.0.0.1:3017` to the in-process control plane. Production mode refuses either override; alternate URLs remain available only for explicit non-production development.
+
 To bootstrap or refresh the persistent production worker from CI or an operator machine:
 
 ```bash
@@ -159,9 +163,11 @@ GitLab CI runs the submission gates:
 - `node:smoke`: syntax checks, Python worker checks, shell checks, tests, health readiness, and smoke test.
 - `docker:amd64-build`: builds and verifies a `linux/amd64` image.
 - `build:docr:digitalocean`: pushes the deploy image.
-- `terraform:apply:digitalocean`: deploys to DigitalOcean App Platform with `-auto-approve`.
+- `terraform:apply:digitalocean`: waits for zero visible user sessions, admitted requests, queued jobs, and AMD worker processes; holds an auto-expiring Cloudflare admission gate through App Platform apply, persistent AMD bootstrap, and final health/config/queue verification; then releases the edge gate before the durable app fence.
 - `bootstrap:amd-persistent`: creates the persistent AMD Droplet if missing, bootstraps it, and verifies that the worker remains ready.
 - `verify:public-image`: anonymously pulls `ghcr.io/theerapong/rukter-ai:latest` as `linux/amd64`.
+
+The one-time migration from a release that predates visible-session tracking is deliberately manual: close active `rukter.ai` tabs, then run that exact commit with `DEPLOYMENT_DRAIN_BOOTSTRAP_APPROVED_SHA=<CI_COMMIT_SHA>`. This exact-SHA value is a manual owner attestation, not complete technical proof of zero users: the legacy app has no presence heartbeat, and DigitalOcean App Platform's default origin ingress is not mutated by this bridge. The Cloudflare gate, continuous queue checks, and read-only worker probes reduce the migration risk, but the first rollout must not be described as proving zero-user state. Later releases derive no-user readiness from the live presence heartbeat and do not use this override.
 
 ## Code Map
 
@@ -180,7 +186,8 @@ GitLab CI runs the submission gates:
 - Fireworks AI: product vision, Product DNA, directed-shot planning, and optional visual critique. Configure with `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, `FIREWORKS_MODEL`, `FIREWORKS_MODEL_FALLBACKS`, `FIREWORKS_VISION_MODEL`, and `FIREWORKS_VISION_MODEL_FALLBACKS`.
 - AMD Developer Cloud on DigitalOcean Droplets: MI300X ROCm worker used by AMD Cinematic. Configure with `AMD_GPU_DIGITALOCEAN_TOKEN`, `AMD_GPU_ORCHESTRATOR_TOKEN`, `AMD_GPU_REGION`, `AMD_GPU_SIZE`, `AMD_GPU_IMAGE`, `AMD_GPU_VPC_UUID`, `AMD_GPU_SSH_KEY_FINGERPRINT` or `AMD_GPU_SSH_KEY_NAME`, `AMD_GPU_PERSISTENT_TAG`, and `AMD_GPU_ALWAYS_ON`.
 - DigitalOcean App Platform and Container Registry: production hosting for `https://rukter.ai` and deploy image storage. Managed through GitLab CI and `infra/terraform/environments/digitalocean`.
-- GitLab CI: smoke tests, Docker `linux/amd64` build, DigitalOcean deploy, persistent worker bootstrap, and public-image verification.
+- Cloudflare WAF: an external, TTL-bound production admission gate that prevents new browser/API work from racing an App Platform deployment. Configure the protected, masked `RUKTER_AI_CLOUDFLARE_API_TOKEN` with Zone Read and Zone WAF Edit access restricted to the `rukter.ai` zone and GitLab environment scope `production/rukter-ai`. The gate stays active through persistent AMD bootstrap and final live verification. Its narrow continuity exceptions are GET/HEAD for one-segment UUID-shaped `/uploads` image/video asset paths, GET/HEAD for the seven exact `/amd-worker` bootstrap source files, protected `POST /api/amd-story-assets`, and cookie-protected `POST /api/story-presence`; raw and normalized paths must agree so traversal and encoded separators remain blocked. CI releases Cloudflare first and the durable app fence second only after all verification passes.
+- GitLab CI: smoke tests, Docker `linux/amd64` build, DigitalOcean deploy, persistent worker bootstrap, and public-image verification. Production apply requires the dedicated `rukter-ai-production` runner tag on a protected runner restricted to protected refs. Merge-request and branch validation must use a separate unprotected validation runner and must never share the production runner's OS user or process namespace.
 - Rukter MCP/OAuth: optional draft handoff from the generated launch kit to an editable Rukter dashboard draft. Configure with `RUKTER_MCP_ACCESS_TOKEN` or OAuth variables (`RUKTER_MCP_URL`, `RUKTER_MCP_CLIENT_ID`, `RUKTER_MCP_RESOURCE`, `RUKTER_OAUTH_AUTHORIZE_URL`, `RUKTER_OAUTH_TOKEN_URL`) plus `RUKTER_DASHBOARD_URL`.
 - GHCR public image: `ghcr.io/theerapong/rukter-ai:latest` for anonymous `linux/amd64` pull verification.
 - Optional Product Twin AMD worker: `AMD_3D_WORKER_URL` and `AMD_3D_WORKER_TOKEN`; current production can run truthful Product Twin previews without this worker.
@@ -190,6 +197,8 @@ GitLab CI runs the submission gates:
 - `GET /health` - readiness check.
 - `GET /api/config` - runtime configuration and anonymous HttpOnly Product Story session.
 - `GET /api/gpu-capacity?refresh=1` - AMD worker and capacity status.
+- `GET /api/gpu-status` - sanitized live worker telemetry, queue, lifecycle, and anonymous usage counts for the GPU Status page.
+- `GET /metrics` - read-only Prometheus gauges for a protected Grafana/Prometheus deployment.
 - `GET /api/story-queue` - FIFO queue snapshot.
 - `POST /api/product-image` - validate and store a session-owned source image.
 - `POST /api/story-jobs` - run Fireworks Product DNA and directed-shot planning; AMD is not queued yet.

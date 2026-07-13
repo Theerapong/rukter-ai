@@ -15,16 +15,21 @@ if ! [[ "${DOCR_RETAIN_ROLLBACK_MANIFESTS}" =~ ^[0-9]+$ ]] || (( DOCR_RETAIN_ROL
   exit 1
 fi
 
-auth_header="Authorization: Bearer ${DIGITALOCEAN_TOKEN}"
 repository_path="$(jq -rn --arg value "${DOCR_REPOSITORY_NAME}" '$value | @uri')"
 registry_path="$(jq -rn --arg value "${DOCR_REGISTRY_NAME}" '$value | @uri')"
 active_gc_file="$(mktemp)"
 post_gc_file="$(mktemp)"
 delete_response_file="$(mktemp)"
-trap 'rm -f "${active_gc_file}" "${post_gc_file}" "${delete_response_file}"' EXIT
+do_header_file="$(mktemp "${TMPDIR:-/tmp}/rukter-do-headers.XXXXXX")"
+chmod 600 "${do_header_file}"
+{
+  printf 'Accept: application/json\n'
+  printf 'Authorization: Bearer %s\n' "${DIGITALOCEAN_TOKEN}"
+} > "${do_header_file}"
+trap 'rm -f "${active_gc_file}" "${post_gc_file}" "${delete_response_file}" "${do_header_file}"' EXIT
 
 api_get() {
-  curl --retry 3 --retry-all-errors -fsS -H "${auth_header}" "$1"
+  curl --retry 3 --retry-all-errors -fsS --header "@${do_header_file}" "$1"
 }
 
 load_all_manifests() {
@@ -58,7 +63,7 @@ load_all_manifests() {
 }
 
 active_gc_status() {
-  curl -sS -o "${active_gc_file}" -w '%{http_code}' -H "${auth_header}" \
+  curl -sS -o "${active_gc_file}" -w '%{http_code}' --header "@${do_header_file}" \
     "${DO_API}/registries/${registry_path}/garbage-collection"
 }
 
@@ -254,7 +259,7 @@ else
       updated_at="$(printf '%s' "${manifest}" | jq -r '.updated_at')"
       echo "Deleting stale DOCR manifest ${digest:0:19} (${tags:-untagged}, ${updated_at})."
       status_code="$(curl --retry 3 --retry-all-errors -sS -o "${delete_response_file}" -w '%{http_code}' \
-        -X DELETE -H "${auth_header}" \
+        -X DELETE --header "@${do_header_file}" \
         "${DO_API}/registries/${registry_path}/repositories/${repository_path}/digests/${digest}")"
       if [[ "${status_code}" == "204" ]]; then
         ((deleted_this_pass += 1))
@@ -282,7 +287,7 @@ else
 fi
 
 set +e
-post_code="$(curl -sS -o "${post_gc_file}" -w '%{http_code}' -X POST -H "${auth_header}" \
+post_code="$(curl -sS -o "${post_gc_file}" -w '%{http_code}' -X POST --header "@${do_header_file}" \
   "${DO_API}/registries/${registry_path}/garbage-collection")"
 post_exit=$?
 set -e

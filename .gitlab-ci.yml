@@ -35,10 +35,16 @@ variables:
   TF_HTTP_LOCK_METHOD: "POST"
   TF_HTTP_UNLOCK_METHOD: "DELETE"
   TF_HTTP_RETRY_WAIT_MIN: "5"
+  DEPLOYMENT_DRAIN_TTL_SECONDS: "21600"
+  DEPLOYMENT_EDGE_GATE_TTL_SECONDS: "21600"
+  # Apply is locally bounded well inside both 6h fences and the 4h job timeout.
+  DEPLOYMENT_APPLY_DEADLINE_SECONDS: "12600"
+  DEPLOYMENT_APPLY_RENEW_INTERVAL_SECONDS: "300"
+  DEPLOYMENT_APPLY_READINESS_INTERVAL_SECONDS: "15"
   # One-time bridge from the release immediately before the durable drain API.
   # An absent-route fallback is accepted only when this exact SHA is CI_COMMIT_BEFORE_SHA;
   # every later main pipeline fails closed if the drain endpoint is unavailable.
-  DEPLOYMENT_DRAIN_LEGACY_PARENT_SHA: "42b5bc9c964583328dfb04b3628c58cd2e75889b"
+  DEPLOYMENT_DRAIN_LEGACY_PARENT_SHA: "d21ae81bc667db6bb6915137fb781dc05375c8c7"
 
 node:smoke:
   stage: test
@@ -49,7 +55,7 @@ node:smoke:
     - node --check public/app.js
     - node --check scripts/smoke.mjs
     - python3 -m py_compile amd-worker/app.py amd-worker/gpu_telemetry.py amd-worker/identity_guard.py amd-worker/run_story_pipeline.py
-    - bash -n scripts/assert-current-main-sha.sh scripts/bootstrap-persistent-amd.sh scripts/deployment-drain.sh scripts/verify-live-deployment.sh scripts/wait-live-amd-queue-idle.sh amd-worker/bootstrap.sh amd-worker/run_story_pipeline.sh
+    - bash -n scripts/assert-current-main-sha.sh scripts/assert-production-targets.sh scripts/bootstrap-persistent-amd.sh scripts/deployment-drain.sh scripts/deployment-edge-gate.sh scripts/prune-docr-repository.sh scripts/run-terraform-apply-with-watchdog.sh scripts/verify-live-deployment.sh scripts/wait-live-amd-queue-idle.sh amd-worker/bootstrap.sh amd-worker/run_story_pipeline.sh
     - unset FIREWORKS_API_KEY DIGITALOCEAN_TOKEN AMD_GPU_DIGITALOCEAN_TOKEN AMD_GPU_PUBLIC_ENABLED AMD_GPU_ORCHESTRATOR_URL
     - npm test
     - grep -Fq 'COPY amd-worker ./amd-worker' Dockerfile
@@ -107,16 +113,29 @@ build:docr:digitalocean:
   needs:
     - node:smoke
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
   script:
     - test -n "${DIGITALOCEAN_TOKEN:-}"
     - docker version
     - |
       DO_API="https://api.digitalocean.com/v2"
-      REGISTRIES_JSON="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "${DO_API}/registries")"
-      REGISTRY_NAME="$(printf '%s' "${REGISTRIES_JSON}" | jq -r --arg name "${DOCR_REGISTRY_NAME}" '.registries[]? | select(.name == $name) | .name' | head -n 1)"
+      DO_METADATA="$({
+        set -euo pipefail
+        DO_HEADER_FILE="$(mktemp "${TMPDIR:-/tmp}/rukter-do-headers.XXXXXX")"
+        chmod 600 "${DO_HEADER_FILE}"
+        trap 'rm -f "${DO_HEADER_FILE}"' EXIT
+        {
+          printf 'Accept: application/json\n'
+          printf 'Authorization: Bearer %s\n' "${DIGITALOCEAN_TOKEN}"
+        } > "${DO_HEADER_FILE}"
+        REGISTRIES_JSON="$(curl -fsS --header "@${DO_HEADER_FILE}" "${DO_API}/registries")"
+        REGISTRY_NAME="$(printf '%s' "${REGISTRIES_JSON}" | jq -r --arg name "${DOCR_REGISTRY_NAME}" '.registries[]? | select(.name == $name) | .name' | head -n 1)"
+        ACCOUNT_EMAIL="$(curl -fsS --header "@${DO_HEADER_FILE}" "${DO_API}/account" | jq -r '.account.email // empty')"
+        printf '%s\n%s\n' "${REGISTRY_NAME}" "${ACCOUNT_EMAIL}"
+      })"
+      REGISTRY_NAME="$(sed -n '1p' <<<"${DO_METADATA}")"
+      ACCOUNT_EMAIL="$(sed -n '2p' <<<"${DO_METADATA}")"
       test -n "${REGISTRY_NAME}"
-      ACCOUNT_EMAIL="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "${DO_API}/account" | jq -r '.account.email // empty')"
       test -n "${ACCOUNT_EMAIL}"
       export DOCR_REGISTRY_NAME="${REGISTRY_NAME}"
       export DOCR_IMAGE_TAG="${CI_COMMIT_SHORT_SHA}-${CI_PIPELINE_IID}"
@@ -156,6 +175,19 @@ terraform:validate:digitalocean:
 
 terraform:apply:digitalocean:
   stage: deploy
+  tags:
+    - rukter-ai-production
+  variables:
+    RUKTER_AI_DEPLOYMENT_PRODUCTION: "true"
+    RUKTER_AI_PUBLIC_URL: "https://rukter.ai"
+    DEPLOYMENT_EDGE_GATE_PUBLIC_URL: "https://rukter.ai"
+    DEPLOYMENT_EDGE_GATE_API_URL: "https://api.cloudflare.com/client/v4"
+    DEPLOYMENT_EDGE_GATE_ZONE_NAME: "rukter.ai"
+    DEPLOYMENT_DRAIN_DIGITALOCEAN_API_URL: "https://api.digitalocean.com/v2"
+    AMD_GPU_DIGITALOCEAN_API_URL: "https://api.digitalocean.com/v2"
+    AMD_GPU_PERSISTENT_TAG: "rukter-product-story-persistent"
+    AMD_GPU_WORKER_SOURCE_BASE_URL: "https://rukter.ai/amd-worker"
+    AMD_GPU_ORCHESTRATOR_URL: "http://127.0.0.1:3017"
   interruptible: false
   timeout: 4h
   resource_group: rukter-ai-terraform-digitalocean
@@ -164,17 +196,40 @@ terraform:apply:digitalocean:
       artifacts: true
     - terraform:validate:digitalocean
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
   script:
+    - test "${CI_COMMIT_REF_PROTECTED:-}" = "true" || { echo "Production deploy requires a protected Git ref on the isolated rukter-ai-production runner." >&2; exit 1; }
+    - test "${RUKTER_AI_DEPLOYMENT_PRODUCTION:-}" = "true" || { echo "Production deploy scripts must run in production pin mode." >&2; exit 1; }
+    - test "${RUKTER_AI_PUBLIC_URL:-}" = "https://rukter.ai" || { echo "Production deploy requires RUKTER_AI_PUBLIC_URL=https://rukter.ai." >&2; exit 1; }
+    - test "${DEPLOYMENT_EDGE_GATE_PUBLIC_URL:-}" = "https://rukter.ai" || { echo "Production deploy requires DEPLOYMENT_EDGE_GATE_PUBLIC_URL=https://rukter.ai." >&2; exit 1; }
+    # This project variable must be configured as both protected and masked.
+    # Check it before acquiring either production fence.
+    - test -n "${RUKTER_AI_CLOUDFLARE_API_TOKEN:-}" || { echo "RUKTER_AI_CLOUDFLARE_API_TOKEN must be a protected, masked rukter.ai Zone Read + Zone WAF Edit token; refusing any production mutation." >&2; exit 1; }
+    - test "${DEPLOYMENT_EDGE_GATE_API_URL:-}" = "https://api.cloudflare.com/client/v4" || { echo "Production deploy forbids a Cloudflare API override." >&2; exit 1; }
+    - test "${DEPLOYMENT_EDGE_GATE_ZONE_NAME:-}" = "rukter.ai" || { echo "Production deploy requires the exact rukter.ai Cloudflare zone." >&2; exit 1; }
+    - test "${DEPLOYMENT_DRAIN_DIGITALOCEAN_API_URL:-}" = "https://api.digitalocean.com/v2" || { echo "Production drain requires the official DigitalOcean API URL." >&2; exit 1; }
+    - test "${AMD_GPU_DIGITALOCEAN_API_URL:-}" = "https://api.digitalocean.com/v2" || { echo "Production AMD orchestration requires the official DigitalOcean API URL." >&2; exit 1; }
+    - test "${AMD_GPU_PERSISTENT_TAG:-}" = "rukter-product-story-persistent" || { echo "Production requires the exact persistent AMD worker tag." >&2; exit 1; }
+    - test "${AMD_GPU_WORKER_SOURCE_BASE_URL:-}" = "https://rukter.ai/amd-worker" || { echo "Production AMD bootstrap requires the exact same-origin worker source." >&2; exit 1; }
+    - test "${AMD_GPU_ORCHESTRATOR_URL:-}" = "http://127.0.0.1:3017" || { echo "Production requires the in-process loopback AMD orchestrator endpoint." >&2; exit 1; }
+    - bash scripts/assert-production-targets.sh
     - test -n "${DIGITALOCEAN_TOKEN:-}"
     - test -n "${AMD_GPU_DIGITALOCEAN_TOKEN:-}"
     - test -n "${AMD_GPU_ORCHESTRATOR_TOKEN:-}"
     - bash scripts/assert-current-main-sha.sh
     - mkdir -p .ci-artifacts
-    - rm -f .ci-artifacts/deployment-drain.env
-    - printf 'pre_apply\n' > .ci-artifacts/deployment-phase
+    - rm -f .ci-artifacts/deployment-drain.env .ci-artifacts/deployment-edge-gate.json
+    - umask 077; printf 'pre_apply\n' > .ci-artifacts/deployment-phase; chmod 600 .ci-artifacts/deployment-phase
     - bash scripts/deployment-drain.sh acquire
+    # First prove the existing app is idle without interrupting any request.
     - DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY=true bash scripts/wait-live-amd-queue-idle.sh
+    # Then close public ingress at Cloudflare and require another continuous
+    # idle window. The expiring gate remains held through Terraform apply,
+    # persistent AMD bootstrap, and final live verification without mutating
+    # the App Platform spec.
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh acquire
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh status
+    - DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY=true DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/wait-live-amd-queue-idle.sh
     - terraform -chdir="${TF_DO_ENV_DIR}" init -input=false
     - export TF_VAR_image_repository="${DOCR_REPOSITORY_NAME}"
     - export TF_VAR_image_tag="${DOCR_IMAGE_TAG}"
@@ -184,7 +239,7 @@ terraform:apply:digitalocean:
     - export TF_VAR_rukter_mcp_access_token="${RUKTER_MCP_ACCESS_TOKEN:-}"
     - export TF_VAR_amd_3d_worker_url="${AMD_3D_WORKER_URL:-}"
     - export TF_VAR_amd_3d_worker_token="${AMD_3D_WORKER_TOKEN:-}"
-    - export TF_VAR_amd_gpu_orchestrator_url="${AMD_GPU_ORCHESTRATOR_URL:-http://127.0.0.1:3017}"
+    - export TF_VAR_amd_gpu_orchestrator_url="${AMD_GPU_ORCHESTRATOR_URL}"
     - export TF_VAR_amd_gpu_orchestrator_token="${AMD_GPU_ORCHESTRATOR_TOKEN:-}"
     - export TF_VAR_amd_gpu_digitalocean_token="${AMD_GPU_DIGITALOCEAN_TOKEN:-}"
     - export TF_VAR_amd_gpu_region="${AMD_GPU_REGION:-atl1}"
@@ -197,53 +252,89 @@ terraform:apply:digitalocean:
     - export TF_VAR_amd_gpu_queue_max_size="${AMD_GPU_QUEUE_MAX_SIZE:-25}"
     - export TF_VAR_amd_gpu_capacity_poll_ms="${AMD_GPU_CAPACITY_POLL_MS:-30000}"
     - export TF_VAR_amd_gpu_persistent_tag="${AMD_GPU_PERSISTENT_TAG:-rukter-product-story-persistent}"
-    - export TF_VAR_amd_gpu_worker_source_base_url="${AMD_GPU_WORKER_SOURCE_BASE_URL:-https://rukter.ai/amd-worker}"
+    - export TF_VAR_amd_gpu_worker_source_base_url="${AMD_GPU_WORKER_SOURCE_BASE_URL}"
     - export TF_VAR_amd_gpu_capacity_state="${AMD_GPU_CAPACITY_STATE:-unavailable}"
     - export TF_VAR_amd_gpu_availability_reason="${AMD_GPU_AVAILABILITY_REASON:-AMD Developer Cloud capacity is checked live before each job.}"
     - export TF_VAR_amd_gpu_public_enabled="${AMD_GPU_PUBLIC_ENABLED:-false}"
     - export TF_VAR_amd_gpu_always_on_enabled="${AMD_GPU_ALWAYS_ON:-true}"
     - |
       if ! terraform -chdir="${TF_DO_ENV_DIR}" state show digitalocean_app.app >/dev/null 2>&1; then
-        app_id="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "https://api.digitalocean.com/v2/apps?per_page=200" \
-          | jq -r --arg name "rukter-ai-launch-agent" '.apps[]? | select(.spec.name == $name) | .id' \
-          | head -n 1)"
+        app_id="$({
+          set -euo pipefail
+          do_header_file="$(mktemp "${TMPDIR:-/tmp}/rukter-do-headers.XXXXXX")"
+          chmod 600 "${do_header_file}"
+          trap 'rm -f "${do_header_file}"' EXIT
+          {
+            printf 'Accept: application/json\n'
+            printf 'Authorization: Bearer %s\n' "${DIGITALOCEAN_TOKEN}"
+          } > "${do_header_file}"
+          curl -fsS --header "@${do_header_file}" "https://api.digitalocean.com/v2/apps?per_page=200" \
+            | jq -r --arg name "rukter-ai-launch-agent" '.apps[]? | select(.spec.name == $name) | .id' \
+            | head -n 1
+        })"
         test -n "${app_id}"
         terraform -chdir="${TF_DO_ENV_DIR}" import digitalocean_app.app "${app_id}"
       fi
     - terraform -chdir="${TF_DO_ENV_DIR}" plan -parallelism=20 -out=tfplan-live
-    - DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY=true bash scripts/wait-live-amd-queue-idle.sh
+    # Planning can take long enough for a tab or admitted request to reappear.
+    # Require a new gated continuous idle window immediately before apply.
+    - DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY=true DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/wait-live-amd-queue-idle.sh
     - bash scripts/assert-current-main-sha.sh
-    - bash scripts/deployment-drain.sh renew
-    - printf 'apply_started\n' > .ci-artifacts/deployment-phase
-    - terraform -chdir="${TF_DO_ENV_DIR}" apply -parallelism=20 -auto-approve tfplan-live
-    - bash scripts/verify-live-deployment.sh
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/deployment-drain.sh renew
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh renew
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh status
+    - bash scripts/run-terraform-apply-with-watchdog.sh terraform -chdir="${TF_DO_ENV_DIR}" apply -parallelism=20 -auto-approve tfplan-live
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh status
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/verify-live-deployment.sh
     # The bootstrap release had no old-app admission endpoint. From this point
     # onward, acquire the durable fence on the newly deployed app as well.
-    - DEPLOYMENT_DRAIN_REQUIRE_SUPPORTED=true bash scripts/deployment-drain.sh acquire
-    - DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY=true bash scripts/wait-live-amd-queue-idle.sh
-    - bash scripts/deployment-drain.sh renew
+    - DEPLOYMENT_DRAIN_REQUIRE_SUPPORTED=true DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/deployment-drain.sh acquire
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/deployment-drain.sh renew
+    - DEPLOYMENT_DRAIN_BOOTSTRAP_COMPATIBILITY=true DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/wait-live-amd-queue-idle.sh
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/deployment-drain.sh status
+    - printf 'app_fenced\n' > .ci-artifacts/deployment-phase
     - bash scripts/bootstrap-persistent-amd.sh
-    - bash scripts/wait-live-amd-queue-idle.sh
-    - bash scripts/deployment-drain.sh status
-    - curl -fsS https://rukter.ai/health | jq -e --arg sha "${CI_COMMIT_SHA}" '.status == "ok" and (.commitSha == $sha or .appCommitSha == $sha)'
-    - curl -fsS https://rukter.ai/api/config | jq -e '.amdGpuAutoShutdown == false and .amdGpuAlwaysOn == true'
-    - curl -fsS https://rukter.ai/api/story-queue | jq -e '.activeJobPresent == false and .queuedJobs == 0 and .inProgressJobs == 0'
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh status
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/wait-live-amd-queue-idle.sh
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/deployment-drain.sh status
+    - DEPLOYMENT_EDGE_GATE_REQUIRED=true bash scripts/verify-live-deployment.sh
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh status
     - terraform -chdir="${TF_DO_ENV_DIR}" output
+    - printf 'verification_complete\n' > .ci-artifacts/deployment-phase
+    - DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh release
+    - printf 'edge_released\n' > .ci-artifacts/deployment-phase
     - bash scripts/deployment-drain.sh release
     - printf 'released\n' > .ci-artifacts/deployment-phase
   after_script:
     - |
       phase="$(sed -n '1p' .ci-artifacts/deployment-phase 2>/dev/null || true)"
-      if [[ "${phase}" == "pre_apply" && -r .ci-artifacts/deployment-drain.env ]]; then
-        echo "Deploy did not start; releasing only this pipeline's owned admission fence."
-        bash scripts/deployment-drain.sh release
-      elif [[ "${phase}" == "apply_started" ]]; then
-        mode="$(sed -n 's/^mode=//p' .ci-artifacts/deployment-drain.env 2>/dev/null | tail -n 1)"
-        if [[ "${mode}" == "legacy" ]]; then
-          echo "The one-time migration apply started. Its TTL tag will fence the new app immediately, while the pre-drain app can only be protected by the continuous idle window."
-        else
-          echo "Terraform apply started, so an ambiguous or failed deployment keeps the fail-closed TTL fence in place."
+      if [[ "${phase}" == "pre_apply" ]]; then
+        echo "Deploy did not start; releasing this pipeline's edge gate and durable admission tag."
+        edge_release_status=0
+        drain_release_status=0
+        # Recovery release is safe even when acquire failed after Cloudflare
+        # accepted the rule but before the local 0600 state was written.
+        DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh release || edge_release_status=$?
+        bash scripts/deployment-drain.sh release || drain_release_status=$?
+        if [[ "${edge_release_status}" != "0" || "${drain_release_status}" != "0" ]]; then
+          echo "A pre-apply fence could not be released cleanly; the remaining gate stays fail-closed."
         fi
+      elif [[ "${phase}" == "apply_started" ]]; then
+        echo "Terraform apply started, so an ambiguous or failed deployment keeps both fail-closed TTL fences in place; Cloudflare automatically reopens ingress when its TTL expires."
+      elif [[ "${phase}" == "app_fenced" ]]; then
+        echo "Persistent AMD bootstrap or final live verification did not finish; keeping both fail-closed TTL fences in place."
+      elif [[ "${phase}" == "verification_complete" ]]; then
+        echo "Final AMD and app verification passed; retrying ordered edge-then-durable fence release."
+        edge_release_status=0
+        DEPLOYMENT_EDGE_GATE_PRODUCTION=true bash scripts/deployment-edge-gate.sh release || edge_release_status=$?
+        if [[ "${edge_release_status}" == "0" ]]; then
+          bash scripts/deployment-drain.sh release || echo "Durable fence release still failed and will recover by TTL."
+        else
+          echo "Cloudflare gate release still failed; the durable fence remains locked until recovery."
+        fi
+      elif [[ "${phase}" == "edge_released" ]]; then
+        echo "Public ingress is restored after verification; retrying durable fence release."
+        bash scripts/deployment-drain.sh release || echo "Durable fence release still failed and will recover by TTL."
       fi
   environment:
     name: production/rukter-ai
@@ -260,7 +351,7 @@ verify:rukter-ai:digitalocean:
   needs:
     - terraform:apply:digitalocean
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
   script:
     - curl -fsS https://rukter.ai/health
     - curl -fsS https://rukter.ai/api/config | jq '{runtimePlatform,amdStoryOrchestratorConfigured,amdGpuPublicEnabled}'
@@ -272,7 +363,7 @@ verify:public-image:
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
   script:
     - docker logout ghcr.io || true
     - docker buildx imagetools inspect "${PUBLIC_CONTAINER_IMAGE}"

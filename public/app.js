@@ -1073,7 +1073,14 @@ function renderQueueDetails() {
 async function refreshQueueDetails() {
   const query = currentJob?.id ? `?jobId=${encodeURIComponent(currentJob.id)}` : ''
   try {
-    const response = await fetch(`/api/story-queue${query}`, { cache: 'no-store', signal: AbortSignal.timeout(5_000) })
+    const response = await fetch(`/api/story-queue${query}`, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: document.visibilityState === 'visible'
+        ? { 'x-rukter-story-presence': 'visible' }
+        : {},
+      signal: AbortSignal.timeout(5_000),
+    })
     const snapshot = await response.json()
     if (!response.ok) throw new Error(snapshot.error || 'Could not read AMD queue.')
     queueSnapshot = snapshot
@@ -1084,6 +1091,22 @@ async function refreshQueueDetails() {
     queueSnapshot = { error: error instanceof Error ? error.message : String(error) }
   }
   if (!queuePopover.hidden) renderQueueDetails()
+}
+
+async function refreshStoryPresence() {
+  if (document.visibilityState !== 'visible') return
+  try {
+    await fetch('/api/story-presence', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { 'x-rukter-story-presence': 'visible' },
+      signal: AbortSignal.timeout(5_000),
+    })
+  } catch {
+    // Queue refresh renders deployment/network state. Presence is deliberately
+    // silent and will retry while this document remains visible.
+  }
 }
 
 function setQueuePopoverOpen(open) {
@@ -1632,10 +1655,14 @@ async function loadConfig() {
   try {
     const response = await fetch('/api/config')
     config = await response.json()
+    // /api/config establishes the anonymous session cookie. Start presence
+    // immediately; a potentially slow capacity refresh must not hide this tab
+    // from deployment safety.
+    void refreshStoryPresence()
     setStoryLimits(config.storyLimits)
     if (typeof config.deploymentDraining === 'boolean' || config.deploymentDrain) setDeploymentDrain(config)
     renderSources()
-    if (config.amdGpuPublicEnabled) await checkGpuCapacity()
+    if (config.amdGpuPublicEnabled) void checkGpuCapacity()
     else renderCapacity(config)
   } catch {
     amdModeState.textContent = 'Offline'
@@ -1689,6 +1716,12 @@ document.addEventListener('click', () => setQueuePopoverOpen(false))
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') setQueuePopoverOpen(false)
 })
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    void refreshStoryPresence()
+    void refreshQueueDetails()
+  }
+})
 document.querySelectorAll('input[name="storyMode"]').forEach((input) => input.addEventListener('change', updateGenerateAvailability))
 aspect.addEventListener('change', updateRenderResolutionLabels)
 newStoryButton.addEventListener('click', resetStory)
@@ -1716,7 +1749,11 @@ renderActivity()
 renderSources()
 updateRenderResolutionLabels()
 loadConfig().then(() => {
+  void refreshStoryPresence()
   void refreshQueueDetails()
-  deploymentDrainPollTimer = setInterval(() => { void refreshQueueDetails() }, 10_000)
+  deploymentDrainPollTimer = setInterval(() => {
+    void refreshStoryPresence()
+    void refreshQueueDetails()
+  }, 10_000)
   return resumeStoryFromUrl()
 })

@@ -1,0 +1,15 @@
+.gpu-status-page{background:#f5f5f2;color:#111}
+.gpu-dashboard{max-width:1280px;margin:0 auto;padding:clamp(34px,6vw,78px) clamp(20px,5vw,72px) 90px}
+.gpu-intro{display:flex;align-items:flex-end;justify-content:space-between;gap:32px;padding-bottom:28px;border-bottom:1px solid #111}
+.gpu-intro h1{margin:0;max-width:720px;font:850 clamp(40px,6vw,82px)/.94 Archivo,sans-serif;letter-spacing:-.02em}
+.gpu-copy{max-width:650px;margin:22px 0 0;color:#4b4b48;font-size:14px;line-height:1.65}
+.gpu-toolbar{display:flex;align-items:center;gap:12px;flex:0 0 auto;color:#6a6a65;font:700 10px Archivo,sans-serif;text-transform:uppercase}
+.gpu-toolbar button{border:1px solid #111;background:#111;color:#fff;padding:11px 14px;font-size:10px;font-weight:800;text-transform:uppercase;cursor:pointer}
+.gpu-toolbar button:disabled{opacity:.5;cursor:wait}
+.gpu-alert{margin:18px 0 0;padding:15px 18px;border-left:4px solid #ef233c;background:#fff0f1;color:#5d1e24;font-size:12px;line-height:1.5}
+.gpu-cards{display:grid;grid-template-columns:2fr repeat(3,1fr);gap:10px;margin-top:20px}
+.gpu-card{min-height:150px;padding:20px;background:#fff;border:1px solid #d8d8d3;display:flex;flex-direction:column;justify-content:space-between}
+.gpu-card span{font:850 10px Archivo,sans-serif;color:#767671;text-transform:uppercase}.gpu-card strong{font:850 clamp(25px,3vw,42px)/1 Archivo,sans-serif}.gpu-card small{color:#6a6a65;font-size:11px;line-height:1.4}.gpu-card-primary{background:#111;color:#fff;border-color:#111}.gpu-card-primary span,.gpu-card-primary small{color:#bcbcb6}
+.gpu-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.gpu-panel{padding:24px;background:#fff;border:1px solid #d8d8d3}.gpu-panel-wide{margin-top:10px}.gpu-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding-bottom:16px;border-bottom:1px solid #e2e2dd}.gpu-panel h2{margin:3px 0 0;font:850 22px/1 Archivo,sans-serif}.gpu-panel .eyebrow{margin:0;color:#ef233c}.status-pill,.privacy-mark{display:inline-flex;align-items:center;padding:6px 8px;border:1px solid #d8d8d3;color:#777;font:850 9px Archivo,sans-serif;text-transform:uppercase;white-space:nowrap}.status-pill-good{border-color:#9bd6c0;color:#0d8c66;background:#f1fbf6}.status-pill-warn{border-color:#e5b2b6;color:#b21f2b;background:#fff4f4}.status-pill-muted{color:#777}.privacy-mark{color:#0d8c66;border-color:#9bd6c0;background:#f1fbf6}
+.gpu-facts{display:grid;grid-template-columns:1fr auto;margin:0}.gpu-facts dt,.gpu-facts dd{padding:11px 0;border-bottom:1px solid #ededE9;font-size:11px}.gpu-facts dt{color:#74746f;font-weight:750;text-transform:uppercase}.gpu-facts dd{margin:0;text-align:right;font:750 12px Archivo,sans-serif}.privacy-note,.grafana-note{color:#5e5e59;font-size:11px;line-height:1.6}.metrics-url{display:inline-block;padding:9px 11px;background:#f3f3f0;border:1px solid #d8d8d3;font-size:11px}
+@media (max-width:760px){.gpu-intro{display:block}.gpu-toolbar{justify-content:space-between;margin-top:24px}.gpu-cards{grid-template-columns:1fr 1fr}.gpu-card-primary{grid-column:1/-1}.gpu-grid{grid-template-columns:1fr}.gpu-panel{padding:18px}}

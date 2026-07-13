@@ -24,7 +24,7 @@ test('turns a deployment drain rejection into a recoverable maintenance state', 
   assert.match(appSource, /deployment_drain_check_failed/)
   assert.match(appSource, /response\.status !== 503/)
   assert.match(appSource, /handleDeploymentDrainResponse\(response, payload\)/)
-  assert.match(appSource, /setInterval\(\(\) => \{ void refreshQueueDetails\(\) \}, 10_000\)/)
+  assert.match(appSource, /setInterval\(\(\) => \{[\s\S]*?void refreshStoryPresence\(\)[\s\S]*?void refreshQueueDetails\(\)[\s\S]*?\}, 10_000\)/)
   assert.match(appSource, /New Product Story jobs are available again/)
   assert.match(appSource, /requestJobCancellation/)
   assert.match(appSource, /pollJob\(id\)/)

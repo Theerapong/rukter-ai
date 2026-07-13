@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rukter.ai - GPU Status</title>
+    <meta name="description" content="Read-only AMD MI300X and Product Story runtime status.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23111111'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='Arial' font-size='18' font-weight='700' fill='white'%3ER%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css?v=20260713drain1">
+    <link rel="stylesheet" href="/gpu-status.css?v=20260713gpu1">
+  </head>
+  <body class="gpu-status-page">
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Rukter.ai home">Rukter<span>.ai</span></a>
+      <div class="header-title">
+        <strong>GPU Status</strong>
+        <span>Read-only AMD runtime monitor</span>
+      </div>
+      <nav class="header-actions" aria-label="Product tools">
+        <a class="icon-link" href="/" title="Product Story Director" aria-label="Product Story Director">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM9 9h6v6H9z"/></svg>
+        </a>
+        <span class="compute-badge is-safe" aria-label="Persistent AMD GPU status"><i></i><span>AMD GPU persistent</span></span>
+      </nav>
+    </header>
+
+    <main class="gpu-dashboard" aria-labelledby="gpuTitle">
+      <section class="gpu-intro">
+        <div>
+          <p class="eyebrow">Runtime / AMD MI300X</p>
+          <h1 id="gpuTitle">GPU status, in real time.</h1>
+          <p class="gpu-copy">A read-only view of ROCm load, worker health and anonymous Product Story usage. This page never starts, stops or releases the persistent worker.</p>
+        </div>
+        <div class="gpu-toolbar">
+          <span id="lastUpdated" aria-live="polite">Checking status…</span>
+          <button id="refreshButton" type="button">Refresh now</button>
+        </div>
+      </section>
+
+      <section class="gpu-alert" id="statusAlert" role="status" hidden></section>
+
+      <section class="gpu-cards" aria-label="AMD GPU summary">
+        <article class="gpu-card gpu-card-primary"><span>Worker</span><strong id="workerState">Checking…</strong><small id="workerNote">Waiting for the persistent worker health sample.</small></article>
+        <article class="gpu-card"><span>Compute load</span><strong id="utilizationValue">—</strong><small>ROCm utilization</small></article>
+        <article class="gpu-card"><span>VRAM</span><strong id="vramValue">—</strong><small id="memoryNote">Current memory sample</small></article>
+        <article class="gpu-card"><span>Temperature</span><strong id="temperatureValue">—</strong><small id="powerNote">Power —</small></article>
+      </section>
+
+      <section class="gpu-grid">
+        <article class="gpu-panel">
+          <div class="gpu-panel-head"><div><p class="eyebrow">Worker / lifecycle</p><h2>Persistent MI300X</h2></div><span id="lifecycleBadge" class="status-pill">Checking</span></div>
+          <dl class="gpu-facts" id="workerFacts"></dl>
+        </article>
+        <article class="gpu-panel">
+          <div class="gpu-panel-head"><div><p class="eyebrow">Queue / users</p><h2>Who is using compute?</h2></div><span class="privacy-mark">Anonymous counts</span></div>
+          <dl class="gpu-facts" id="queueFacts"></dl>
+          <p class="privacy-note">No names, email addresses or job IDs are exposed here. Active sessions count visible Product Story clients; active GPU jobs count work on the single AMD render slot.</p>
+        </article>
+      </section>
+
+      <section class="gpu-panel gpu-panel-wide">
+        <div class="gpu-panel-head"><div><p class="eyebrow">Observability</p><h2>Grafana / Prometheus</h2></div><span class="status-pill status-pill-muted">Optional</span></div>
+        <p class="grafana-note">The app exposes a read-only Prometheus-compatible <code>/metrics</code> endpoint. Point a protected Grafana/Prometheus instance at this origin; keep Grafana behind admin authentication and never publish provider tokens in a dashboard.</p>
+        <code class="metrics-url" id="metricsUrl">/metrics</code>
+      </section>
+    </main>
+    <script type="module" src="/gpu-status.js?v=20260713gpu1"></script>
+  </body>
+</html>

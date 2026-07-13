@@ -43,6 +43,9 @@ const storySessionCreateWindowMs = 60 * 1000
 const storySessionCreateMax = 4
 const storySessionActiveMax = 2
 const storySessionCreateHistory = new Map()
+const storySessionPresenceTtlMs = Math.max(15_000, Math.min(5 * 60_000, Number(process.env.STORY_SESSION_PRESENCE_TTL_MS) || 45_000))
+const storySessionPresenceMax = Math.max(100, Math.min(25_000, Number(process.env.STORY_SESSION_PRESENCE_MAX) || 5_000))
+const activeStorySessionPresence = new Map()
 const storyClientCreateMax = 8
 const storyGlobalCreateMax = 24
 const storyGlobalActiveMax = 12
@@ -108,6 +111,7 @@ const defaultFireworksStoryMaxTokens = 6144
 const hackathonResponseBudgetMs = 30_000
 const amdGpuPublicUrl = process.env.RUKTER_AI_PUBLIC_URL || 'https://rukter.ai'
 const amdGpuAlwaysOnEnabled = String(process.env.AMD_GPU_ALWAYS_ON ?? 'true').toLowerCase() !== 'false'
+const gpuStatusPublicEnabled = String(process.env.AMD_GPU_STATUS_PUBLIC_ENABLED ?? 'true').toLowerCase() !== 'false'
 const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
   ? createDigitalOceanGpuOrchestrator({
       token: process.env.AMD_GPU_DIGITALOCEAN_TOKEN,
@@ -139,6 +143,62 @@ const amdStoryQueue = createSerialJobQueue({
   onChange: syncAmdStoryQueueState,
   onError: handleUnexpectedAmdQueueError,
 })
+
+function pruneStorySessionPresence(nowMs = Date.now()) {
+  for (const [sessionId, lastSeenAtMs] of activeStorySessionPresence) {
+    if (nowMs - lastSeenAtMs < storySessionPresenceTtlMs) break
+    activeStorySessionPresence.delete(sessionId)
+  }
+  return activeStorySessionPresence.size
+}
+
+function markVisibleStorySessionPresence(req, nowMs = Date.now()) {
+  if (String(req.headers['x-rukter-story-presence'] || '').toLowerCase() !== 'visible') return false
+  const sessionId = storySessionId(req, { allowLoopback: false })
+  if (!sessionId) return false
+  pruneStorySessionPresence(nowMs)
+  if (activeStorySessionPresence.has(sessionId)) activeStorySessionPresence.delete(sessionId)
+  while (activeStorySessionPresence.size >= storySessionPresenceMax) {
+    const oldestSessionId = activeStorySessionPresence.keys().next().value
+    if (!oldestSessionId) break
+    activeStorySessionPresence.delete(oldestSessionId)
+  }
+  activeStorySessionPresence.set(sessionId, nowMs)
+  return true
+}
+
+function activeVisibleStorySessionCount(nowMs = Date.now()) {
+  return pruneStorySessionPresence(nowMs)
+}
+
+function handleStoryPresence(req, res, nowMs = Date.now()) {
+  const sessionId = storySessionId(req, { allowLoopback: false })
+  if (!sessionId) {
+    sendJson(res, 401, {
+      code: 'story_session_required',
+      error: 'An established Product Story session is required.',
+    })
+    return false
+  }
+  if (String(req.headers.origin || '') !== publicOrigin(req)) {
+    sendJson(res, 403, {
+      code: 'story_presence_same_origin_required',
+      error: 'Product Story presence must come from the Rukter page.',
+    })
+    return false
+  }
+  if (String(req.headers['x-rukter-story-presence'] || '').toLowerCase() !== 'visible') {
+    sendJson(res, 400, {
+      code: 'visible_story_presence_required',
+      error: 'Visible Product Story presence is required.',
+    })
+    return false
+  }
+  markVisibleStorySessionPresence(req, nowMs)
+  res.writeHead(204, { 'cache-control': 'no-store' })
+  res.end()
+  return true
+}
 
 function formatCount(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`
@@ -2778,6 +2838,7 @@ function deploymentDrainStatus(queue, durableDrain, checkError = '', workerActiv
   const localLocked = localDeploymentDrainLocked()
   const drainIds = [...new Set([...(durableDrain?.drainIds || []), ...localDeploymentDrains.keys()])]
   const quietForSeconds = Math.max(0, Math.floor((Date.now() - lastAdmissionActivityAtMs) / 1000))
+  const activeUserSessions = activeVisibleStorySessionCount()
   const durableActive = durableDrain?.active === true
   const active = localLocked || durableActive
   const queueIdle = queue.activeStoryJobs === 0
@@ -2788,6 +2849,7 @@ function deploymentDrainStatus(queue, durableDrain, checkError = '', workerActiv
   const readyForDeploy = durableActive
     && !checkError
     && activeAdmittedRequests === 0
+    && activeUserSessions === 0
     && queueIdle
     && workerActivity?.reachable === true
     && workerActivity?.verifiable === true
@@ -2816,6 +2878,7 @@ function deploymentDrainStatus(queue, durableDrain, checkError = '', workerActiv
     persistentWorkerIds: durableDrain?.persistentWorkerIds || [],
     admissionLocked: active || Boolean(checkError),
     activeAdmittedRequests,
+    activeUserSessions,
     quietForSeconds,
     quietWindowSeconds: Math.ceil(deploymentDrainQuietWindowMs / 1000),
     workerActivity: workerActivity || {
@@ -2888,6 +2951,158 @@ async function publicAmdQueueSnapshot(focusJobId = '', { refreshDrain = false, p
   }
 }
 
+function publicGpuTelemetry(value) {
+  const telemetry = normalizeGpuTelemetry(value)
+  if (!telemetry) return null
+  return {
+    available: telemetry.available,
+    source: telemetry.source,
+    sampledAt: telemetry.sampledAt,
+    utilizationPct: telemetry.utilizationPct,
+    vramPct: telemetry.vramPct,
+    powerWatts: telemetry.powerWatts,
+    temperatureC: telemetry.temperatureC,
+    reason: telemetry.reason,
+  }
+}
+
+async function publicGpuStatus() {
+  const checkedAt = new Date().toISOString()
+  const queue = await publicAmdQueueSnapshot()
+  let capacity = {
+    state: 'offline',
+    available: false,
+    reason: 'The AMD GPU orchestrator is not configured.',
+    checkedAt,
+  }
+  let worker = {
+    reachable: false,
+    verifiable: false,
+    idle: false,
+    persistentWorkerCount: 0,
+    reason: capacity.reason,
+    checkedAt,
+  }
+  if (gpuLeaseOrchestrator) {
+    try {
+      capacity = await gpuLeaseOrchestrator.checkCapacity({ refresh: true })
+    } catch (error) {
+      capacity = {
+        state: 'check_failed',
+        available: false,
+        reason: error instanceof Error ? error.message : String(error),
+        checkedAt,
+      }
+    }
+    try {
+      worker = await gpuLeaseOrchestrator.inspectPersistentWorkerActivity()
+    } catch (error) {
+      worker = {
+        reachable: false,
+        verifiable: false,
+        idle: false,
+        persistentWorkerCount: 0,
+        reason: error instanceof Error ? error.message : String(error),
+        checkedAt,
+      }
+    }
+  }
+  return {
+    checkedAt,
+    publicEnabled: gpuStatusPublicEnabled,
+    policy: {
+      alwaysOn: amdGpuAlwaysOnEnabled,
+      autoShutdown: false,
+      lifecycle: amdGpuAlwaysOnEnabled ? 'persistent' : 'retain_after_job',
+      releasePolicy: 'retain_after_job',
+    },
+    capacity: {
+      state: capacity.state || 'unknown',
+      available: capacity.available === true,
+      region: capacity.region || process.env.AMD_GPU_REGION || 'atl1',
+      size: capacity.size || process.env.AMD_GPU_SIZE || 'gpu-mi300x1-192gb-devcloud',
+      persistentLease: capacity.persistentLease === true,
+      billing: capacity.billing || 'persistent_active',
+      reason: cleanText(capacity.reason, 240),
+      checkedAt: capacity.checkedAt || checkedAt,
+    },
+    worker: {
+      reachable: worker.reachable === true,
+      verifiable: worker.verifiable === true,
+      idle: worker.idle === true,
+      status: cleanText(worker.status, 40) || 'unknown',
+      available: worker.available === true,
+      acceptingJobs: worker.acceptingJobs === true,
+      updatePending: worker.updatePending === true,
+      activeJobPresent: worker.activeJobPresent === true,
+      pipelineProcessPresent: worker.pipelineProcessPresent === true,
+      workerVersion: cleanText(worker.workerVersion, 120),
+      persistentWorkerCount: Number(worker.persistentWorkerCount) || 0,
+      gpuTelemetry: publicGpuTelemetry(worker.gpuTelemetry),
+      reason: cleanText(worker.reason, 240),
+      checkedAt: worker.checkedAt || checkedAt,
+    },
+    queue: {
+      policy: queue.policy,
+      concurrency: queue.concurrency,
+      capacity: queue.capacity,
+      size: queue.size,
+      activeSlot: queue.activeSlot,
+      activeJobPresent: queue.activeJobPresent,
+      queuedJobs: queue.queuedJobs,
+      readyJobs: queue.readyJobs,
+      preparingJobs: queue.preparingJobs,
+      inProgressJobs: queue.inProgressJobs,
+      planningJobs: queue.planningJobs,
+      awaitingApprovalJobs: queue.awaitingApprovalJobs,
+    },
+    users: {
+      activeSessions: activeVisibleStorySessionCount(),
+      activeRequests: Number(queue.admission?.activeRequests) || 0,
+      activeGpuJobs: Number(queue.amdInProgressJobs) || 0,
+      queuedGpuJobs: Number(queue.queuedJobs) || 0,
+    },
+  }
+}
+
+function prometheusNumber(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : 0
+}
+
+function gpuStatusMetrics(status) {
+  const telemetry = status.worker.gpuTelemetry || {}
+  const labels = `region="${String(status.capacity.region).replace(/[^a-zA-Z0-9_.-]/g, '')}",device="${String(status.capacity.size).replace(/[^a-zA-Z0-9_.-]/g, '')}"`
+  return [
+    '# HELP rukter_gpu_utilization_percent Current AMD ROCm GPU utilization.',
+    '# TYPE rukter_gpu_utilization_percent gauge',
+    `rukter_gpu_utilization_percent{${labels}} ${prometheusNumber(telemetry.utilizationPct)}`,
+    '# HELP rukter_gpu_vram_percent Current AMD ROCm VRAM utilization.',
+    '# TYPE rukter_gpu_vram_percent gauge',
+    `rukter_gpu_vram_percent{${labels}} ${prometheusNumber(telemetry.vramPct)}`,
+    '# HELP rukter_gpu_power_watts Current AMD GPU board power.',
+    '# TYPE rukter_gpu_power_watts gauge',
+    `rukter_gpu_power_watts{${labels}} ${prometheusNumber(telemetry.powerWatts)}`,
+    '# HELP rukter_gpu_temperature_celsius Current AMD GPU temperature.',
+    '# TYPE rukter_gpu_temperature_celsius gauge',
+    `rukter_gpu_temperature_celsius{${labels}} ${prometheusNumber(telemetry.temperatureC)}`,
+    '# HELP rukter_gpu_worker_ready Whether the persistent AMD worker is reachable and ready.',
+    '# TYPE rukter_gpu_worker_ready gauge',
+    `rukter_gpu_worker_ready ${status.worker.reachable && status.worker.available ? 1 : 0}`,
+    '# HELP rukter_gpu_worker_busy Whether the persistent AMD worker has a running pipeline.',
+    '# TYPE rukter_gpu_worker_busy gauge',
+    `rukter_gpu_worker_busy ${status.worker.activeJobPresent || status.worker.pipelineProcessPresent ? 1 : 0}`,
+    '# HELP rukter_gpu_active_jobs Number of active AMD Product Story jobs.',
+    '# TYPE rukter_gpu_active_jobs gauge',
+    `rukter_gpu_active_jobs ${prometheusNumber(status.users.activeGpuJobs)}`,
+    '# HELP rukter_gpu_queued_jobs Number of queued AMD Product Story jobs.',
+    '# TYPE rukter_gpu_queued_jobs gauge',
+    `rukter_gpu_queued_jobs ${prometheusNumber(status.users.queuedGpuJobs)}`,
+    '# HELP rukter_gpu_active_sessions Number of anonymous active Product Story sessions.',
+    '# TYPE rukter_gpu_active_sessions gauge',
+    `rukter_gpu_active_sessions ${prometheusNumber(status.users.activeSessions)}`,
+  ].join('\n') + '\n'
+}
+
 function rejectDeploymentDrain(res, drain, { checkFailed = false } = {}) {
   const retryAfterSeconds = Math.max(1, Number(drain?.retryAfterSeconds) || 15)
   res.setHeader('retry-after', String(retryAfterSeconds))
@@ -2905,7 +3120,50 @@ function rejectDeploymentDrain(res, drain, { checkFailed = false } = {}) {
   })
 }
 
-async function admitUserWorkload(req, res) {
+function responseIsTerminal(res) {
+  return res.writableFinished === true || res.destroyed === true || res.closed === true
+}
+
+async function waitForHandlerAndResponse(res, handler) {
+  let responseTerminal = responseIsTerminal(res)
+  let handlerSettled = false
+  let handlerError = null
+  let resolveSettled
+  const settled = new Promise((resolve) => { resolveSettled = resolve })
+  const settleIfComplete = () => {
+    if (handlerSettled && responseTerminal) resolveSettled()
+  }
+  const markResponseTerminal = () => {
+    responseTerminal = true
+    settleIfComplete()
+  }
+  if (!responseTerminal) {
+    res.once('finish', markResponseTerminal)
+    res.once('close', markResponseTerminal)
+  }
+
+  try {
+    await handler()
+  } catch (error) {
+    handlerError = error
+  } finally {
+    handlerSettled = true
+    // An unexpected rejection before the handler ends a response has no
+    // remaining client work to preserve. Close that explicit no-response path
+    // so the admission can settle without weakening close-first protection.
+    if (handlerError && !responseTerminal && res.writableEnded !== true) {
+      if (typeof res.destroy === 'function') res.destroy()
+      else responseTerminal = true
+    }
+    settleIfComplete()
+    await settled
+    res.off?.('finish', markResponseTerminal)
+    res.off?.('close', markResponseTerminal)
+  }
+  if (handlerError) throw handlerError
+}
+
+async function admitUserWorkload(req, res, handler) {
   const queue = baseAmdQueueSnapshot()
   if (localDeploymentDrainLocked()) {
     rejectDeploymentDrain(res, deploymentDrainStatus(queue, deploymentDrainCache?.value || null))
@@ -2927,15 +3185,12 @@ async function admitUserWorkload(req, res) {
 
   activeAdmittedRequests += 1
   lastAdmissionActivityAtMs = Date.now()
-  let released = false
-  const releaseAdmission = () => {
-    if (released) return
-    released = true
+  try {
+    await waitForHandlerAndResponse(res, handler)
+  } finally {
     activeAdmittedRequests = Math.max(0, activeAdmittedRequests - 1)
     lastAdmissionActivityAtMs = Date.now()
   }
-  res.once('finish', releaseAdmission)
-  res.once('close', releaseAdmission)
   return true
 }
 
@@ -5082,8 +5337,51 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/gpu-status') {
+    if (!gpuStatusPublicEnabled) {
+      sendJson(res, 404, { error: 'GPU status is not enabled for public viewing.' })
+      return
+    }
+    try {
+      sendJson(res, 200, await publicGpuStatus())
+    } catch (error) {
+      sendJson(res, 503, {
+        publicEnabled: gpuStatusPublicEnabled,
+        error: error instanceof Error ? error.message : String(error),
+        checkedAt: new Date().toISOString(),
+      })
+    }
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/metrics') {
+    if (!gpuStatusPublicEnabled) {
+      sendText(res, 404, 'GPU metrics are not enabled for public viewing.')
+      return
+    }
+    try {
+      const status = await publicGpuStatus()
+      res.writeHead(200, {
+        'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+        'cache-control': 'no-store',
+      })
+      res.end(gpuStatusMetrics(status))
+    } catch (error) {
+      sendText(res, 503, error instanceof Error ? error.message : String(error))
+    }
+    return
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/story-queue') {
+    markVisibleStorySessionPresence(req)
     sendJson(res, 200, await publicAmdQueueSnapshot(url.searchParams.get('jobId')))
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/story-presence') {
+    // Presence remains reachable while deployment ingress is gated so a
+    // visible result viewer cannot age out and create a false-idle window.
+    handleStoryPresence(req, res)
     return
   }
 
@@ -5098,8 +5396,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/product-image') {
-    if (!await admitUserWorkload(req, res)) return
-    await handleProductImageUpload(req, res)
+    if (!await admitUserWorkload(req, res, () => handleProductImageUpload(req, res))) return
     return
   }
 
@@ -5141,8 +5438,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/story-jobs') {
-    if (!await admitUserWorkload(req, res)) return
-    await handleCreateStoryJob(req, res)
+    if (!await admitUserWorkload(req, res, () => handleCreateStoryJob(req, res))) return
     return
   }
 
@@ -5202,26 +5498,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/launch-kit') {
-    if (!await admitUserWorkload(req, res)) return
-    await handleLaunchKit(req, res)
+    if (!await admitUserWorkload(req, res, () => handleLaunchKit(req, res))) return
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/design-critique') {
-    if (!await admitUserWorkload(req, res)) return
-    await handleDesignCritique(req, res)
+    if (!await admitUserWorkload(req, res, () => handleDesignCritique(req, res))) return
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/export') {
-    if (!await admitUserWorkload(req, res)) return
-    await handleExport(req, res)
+    if (!await admitUserWorkload(req, res, () => handleExport(req, res))) return
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/rukter-draft') {
-    if (!await admitUserWorkload(req, res)) return
-    await handleCreateRukterDraft(req, res)
+    if (!await admitUserWorkload(req, res, () => handleCreateRukterDraft(req, res))) return
     return
   }
 
@@ -5248,6 +5540,7 @@ server.listen(port, () => {
 })
 
 setInterval(pruneStoryJobs, 60_000).unref()
+setInterval(pruneStorySessionPresence, Math.min(60_000, storySessionPresenceTtlMs)).unref()
 
 const pruneUploads = () => pruneStaleUploads()
   .then((result) => {

@@ -80,6 +80,8 @@ const mobileQueueStatus = $('#mobileQueueStatus')
 const mobileBillingStatus = $('#mobileBillingStatus')
 const jobPanel = $('#jobPanel')
 const toast = $('#toast')
+const deploymentDrainBanner = $('#deploymentDrainBanner')
+const deploymentDrainResume = $('#deploymentDrainResume')
 
 const fallbackStoryLimits = Object.freeze({ minImages: 1, maxImages: 8 })
 let storyLimits = { ...fallbackStoryLimits }
@@ -129,13 +131,78 @@ let queueSnapshot = null
 let submittedDirection = null
 let approvalJobId = ''
 let approvingJob = false
+let deploymentDrainPollTimer = null
+let deploymentDrain = { active: false, retryAfterSeconds: 0 }
 const expandedActivitySteps = new Set()
+const deploymentDrainCodes = new Set(['deployment_drain_active', 'deployment_drain_check_failed', 'deployment_draining'])
 
 function showToast(message, duration = 4200) {
   clearTimeout(toastTimer)
   toast.textContent = message
   toast.hidden = false
   toastTimer = setTimeout(() => { toast.hidden = true }, duration)
+}
+
+function deploymentDrainState(value = {}) {
+  const nested = value?.deploymentDrain && typeof value.deploymentDrain === 'object'
+    ? value.deploymentDrain
+    : value
+  const code = value?.code || value?.errorCode || (typeof value?.error === 'object' ? value.error.code : '')
+  return {
+    active: deploymentDrainCodes.has(code)
+      || Boolean(nested?.admissionLocked ?? nested?.active ?? value?.deploymentDraining),
+    retryAfterSeconds: Math.max(0, Number(
+      nested?.retryAfterSeconds
+      ?? value?.deploymentDrainRetryAfterSeconds
+      ?? value?.retryAfterSeconds,
+    ) || 0),
+  }
+}
+
+function deploymentDrainResumeText(seconds) {
+  if (seconds <= 0) return 'New jobs resume shortly'
+  if (seconds < 60) return 'New jobs resume in under a minute'
+  return `New jobs resume in about ${Math.ceil(seconds / 60)} min`
+}
+
+function updateApprovalAvailability() {
+  approveAmdButton.disabled = approvingJob || !approvalAcknowledgement.checked
+  approveAmdButton.textContent = approvingJob ? 'Approving…' : 'Approve AMD render'
+  if (!approvingJob && currentJob?.status === 'awaiting_approval') {
+    approvalStatus.textContent = 'No render has started; the persistent AMD worker remains online and credits continue.'
+  }
+}
+
+function setDeploymentDrain(value = {}, { announce = false } = {}) {
+  const next = deploymentDrainState(value)
+  const wasActive = deploymentDrain.active
+  deploymentDrain = next
+  config.deploymentDraining = next.active
+  config.deploymentDrainRetryAfterSeconds = next.retryAfterSeconds
+  deploymentDrainBanner.hidden = !next.active
+  deploymentDrainResume.textContent = deploymentDrainResumeText(next.retryAfterSeconds)
+  document.body.classList.toggle('is-deployment-draining', next.active)
+  updateGenerateAvailability()
+  updateApprovalAvailability()
+  if (!wasActive && next.active && announce) {
+    showToast('Scheduled update: existing jobs continue, but new jobs are paused briefly.', 6200)
+  } else if (wasActive && !next.active) {
+    showToast('Scheduled update complete. New Product Story jobs are available again.', 5200)
+  }
+}
+
+function handleDeploymentDrainResponse(response, payload) {
+  const code = payload?.code || payload?.errorCode || (typeof payload?.error === 'object' ? payload.error.code : '')
+  if (response.status !== 503 || !deploymentDrainCodes.has(code)) return false
+  setDeploymentDrain({
+    ...payload,
+    active: true,
+    retryAfterSeconds: payload?.retryAfterSeconds
+      ?? payload?.deploymentDrainRetryAfterSeconds
+      ?? payload?.deploymentDrain?.retryAfterSeconds
+      ?? response.headers.get('retry-after'),
+  }, { announce: true })
+  return true
 }
 
 function formatTime(seconds) {
@@ -230,8 +297,10 @@ function updateRenderResolutionLabels() {
 function updateGenerateAvailability() {
   const cinematicUnavailable = selectedMode() === 'amd_cinematic'
     && !config.amdGpuPublicEnabled
-  generateButton.disabled = sources.length < storyLimits.minImages || cinematicUnavailable
-  generateButton.querySelector('span').textContent = cinematicUnavailable
+  generateButton.disabled = deploymentDrain.active || sources.length < storyLimits.minImages || cinematicUnavailable
+  generateButton.querySelector('span').textContent = deploymentDrain.active
+    ? 'Scheduled update · new jobs paused'
+    : cinematicUnavailable
     ? 'AMD Cinematic is offline'
     : selectedMode() === 'amd_cinematic'
       ? 'Analyze & plan'
@@ -443,7 +512,10 @@ async function uploadSource(source) {
     signal: AbortSignal.timeout(15_000),
   })
   const payload = await response.json().catch(() => null)
-  if (!response.ok || !payload?.url) throw new Error(payload?.error || `${source.file.name} could not be uploaded.`)
+  if (!response.ok || !payload?.url) {
+    handleDeploymentDrainResponse(response, payload)
+    throw new Error(payload?.error || `${source.file.name} could not be uploaded.`)
+  }
   return { ...payload, id: source.id, label: source.label, name: source.file.name, type: source.file.type, size: source.file.size }
 }
 
@@ -582,9 +654,8 @@ function renderApprovalReview(job) {
     directedShotReview.append(item)
   }
 
-  approveAmdButton.disabled = approvingJob || !approvalAcknowledgement.checked
-  approveAmdButton.textContent = approvingJob ? 'Approving…' : 'Approve AMD render'
   approvalStatus.textContent = 'No render has started; the persistent AMD worker remains online and credits continue.'
+  updateApprovalAvailability()
 }
 
 function numericEvidence(value) {
@@ -1006,6 +1077,9 @@ async function refreshQueueDetails() {
     const snapshot = await response.json()
     if (!response.ok) throw new Error(snapshot.error || 'Could not read AMD queue.')
     queueSnapshot = snapshot
+    if (snapshot?.deploymentDrain && typeof snapshot.deploymentDrain.active === 'boolean') {
+      setDeploymentDrain(snapshot)
+    }
   } catch (error) {
     queueSnapshot = { error: error instanceof Error ? error.message : String(error) }
   }
@@ -1205,7 +1279,10 @@ async function pollJob(id) {
 }
 
 async function createStory() {
-  if (sources.length < storyLimits.minImages) return
+  if (sources.length < storyLimits.minImages || deploymentDrain.active) {
+    if (deploymentDrain.active) showToast('New Product Story jobs resume after the scheduled update. Existing jobs continue normally.', 5600)
+    return
+  }
   generateButton.disabled = true
   generateButton.querySelector('span').textContent = 'Uploading source views…'
   try {
@@ -1234,7 +1311,10 @@ async function createStory() {
       signal: AbortSignal.timeout(15_000),
     })
     const job = await response.json().catch(() => null)
-    if (!response.ok || !job?.id) throw new Error(job?.error || 'Could not start Product Story.')
+    if (!response.ok || !job?.id) {
+      handleDeploymentDrainResponse(response, job)
+      throw new Error(job?.error || 'Could not start Product Story.')
+    }
     currentJob = job
     history.replaceState(null, '', `${location.pathname}?job=${encodeURIComponent(job.id)}`)
     activeShotIndex = 0
@@ -1269,7 +1349,10 @@ async function approveAmdRender() {
     })
     const payload = await response.json().catch(() => null)
     const job = payload?.job || payload
-    if (!response.ok || !job?.id) throw new Error(payload?.error || 'Could not approve AMD rendering.')
+    if (!response.ok || !job?.id) {
+      handleDeploymentDrainResponse(response, payload)
+      throw new Error(payload?.error || 'Could not approve AMD rendering.')
+    }
     approvalStatus.textContent = 'Direction approved. Waiting for the AMD render slot.'
     renderJob(job)
     pollJob(job.id)
@@ -1280,8 +1363,7 @@ async function approveAmdRender() {
   } finally {
     approvingJob = false
     if (currentJob?.status === 'awaiting_approval') {
-      approveAmdButton.disabled = !approvalAcknowledgement.checked
-      approveAmdButton.textContent = 'Approve AMD render'
+      updateApprovalAvailability()
     }
   }
 }
@@ -1551,6 +1633,7 @@ async function loadConfig() {
     const response = await fetch('/api/config')
     config = await response.json()
     setStoryLimits(config.storyLimits)
+    if (typeof config.deploymentDraining === 'boolean' || config.deploymentDrain) setDeploymentDrain(config)
     renderSources()
     if (config.amdGpuPublicEnabled) await checkGpuCapacity()
     else renderCapacity(config)
@@ -1610,7 +1693,7 @@ document.querySelectorAll('input[name="storyMode"]').forEach((input) => input.ad
 aspect.addEventListener('change', updateRenderResolutionLabels)
 newStoryButton.addEventListener('click', resetStory)
 approvalAcknowledgement.addEventListener('change', () => {
-  approveAmdButton.disabled = approvingJob || !approvalAcknowledgement.checked
+  updateApprovalAvailability()
 })
 approveAmdButton.addEventListener('click', approveAmdRender)
 mobileJobBar.addEventListener('click', () => jobPanel.scrollIntoView({ behavior: 'smooth', block: 'start' }))
@@ -1624,9 +1707,16 @@ exportVideoButton.addEventListener('click', () => exportBrowserVideo().catch((er
 }))
 playButton.addEventListener('click', () => playButton.classList.contains('is-playing') ? pauseStory() : playStory())
 fullscreenButton.addEventListener('click', () => storyFrame.requestFullscreen?.())
-window.addEventListener('beforeunload', () => sources.forEach((source) => URL.revokeObjectURL(source.previewUrl)))
+window.addEventListener('beforeunload', () => {
+  clearInterval(deploymentDrainPollTimer)
+  sources.forEach((source) => URL.revokeObjectURL(source.previewUrl))
+})
 
 renderActivity()
 renderSources()
 updateRenderResolutionLabels()
-loadConfig().then(resumeStoryFromUrl)
+loadConfig().then(() => {
+  void refreshQueueDetails()
+  deploymentDrainPollTimer = setInterval(() => { void refreshQueueDetails() }, 10_000)
+  return resumeStoryFromUrl()
+})

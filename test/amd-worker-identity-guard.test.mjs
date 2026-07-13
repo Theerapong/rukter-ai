@@ -614,6 +614,80 @@ test('validates worker story payloads and fails closed when the worker token is 
   assert.match(app, /PROCESS_DIAGNOSTIC_CHARS/)
 })
 
+test('reports truthful worker activity without exposing a job id', () => {
+  const result = runWorkerScript(`
+import __future__, ast, json
+
+source = open('amd-worker/app.py', encoding='utf-8').read()
+tree = ast.parse(source)
+names = {'pipeline_process_is_present', 'worker_activity_snapshot'}
+selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+module = ast.Module(body=selected, type_ignores=[])
+
+class MissingProcessGroup:
+    def killpg(self, _pid, _signal):
+        raise ProcessLookupError()
+
+class PresentProcessGroup:
+    def killpg(self, _pid, _signal):
+        return None
+
+class Process:
+    def __init__(self, pid, returncode):
+        self.pid = pid
+        self.returncode = returncode
+
+namespace = {'os': MissingProcessGroup(), 'active_job_id': None, 'active_process': None}
+exec(compile(ast.fix_missing_locations(module), 'amd-worker/app.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
+
+idle = namespace['worker_activity_snapshot']()
+namespace['active_job_id'] = 'private-job-id'
+namespace['active_process'] = Process(4321, None)
+running = namespace['worker_activity_snapshot']()
+namespace['active_job_id'] = None
+namespace['active_process'] = Process(4321, 0)
+finished = namespace['worker_activity_snapshot']()
+namespace['os'] = PresentProcessGroup()
+descendant = namespace['worker_activity_snapshot']()
+
+print(json.dumps({'idle': idle, 'running': running, 'finished': finished, 'descendant': descendant}))
+`)
+
+  assert.deepEqual(result.idle, {
+    activeJobPresent: false,
+    pipelineProcessPresent: false,
+    pipelineProcessPid: null,
+  })
+  assert.deepEqual(result.running, {
+    activeJobPresent: true,
+    pipelineProcessPresent: true,
+    pipelineProcessPid: 4321,
+  })
+  assert.equal(result.finished.pipelineProcessPresent, false)
+  assert.equal(result.descendant.pipelineProcessPresent, true)
+  assert.ok(!JSON.stringify(result).includes('private-job-id'))
+})
+
+test('refuses persistent worker restarts until health and process probes are idle', () => {
+  const app = readFileSync(path.join(repoRoot, 'amd-worker', 'app.py'), 'utf8')
+  const workerBootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')
+  const persistentBootstrap = readFileSync(path.join(repoRoot, 'scripts', 'bootstrap-persistent-amd.sh'), 'utf8')
+
+  assert.match(app, /WORKER_UPDATE_LOCK/)
+  assert.match(app, /activeJobPresent/)
+  assert.match(app, /pipelineProcessPresent/)
+  assert.match(app, /pipelineProcessPid/)
+  assert.match(workerBootstrap, /assert_worker_idle_for_update/)
+  assert.match(workerBootstrap, /docker top rukter-amd-worker/)
+  assert.match(workerBootstrap, /Refusing to update or restart the persistent AMD worker/)
+  assert.match(workerBootstrap, /systemctl restart rukter-amd-worker\.service/)
+  assert.match(persistentBootstrap, /assert_remote_worker_idle_for_update/)
+  assert.match(persistentBootstrap, /Refusing to bootstrap the persistent AMD worker/)
+  assert.match(persistentBootstrap, /\.activeJobPresent == false/)
+  assert.match(persistentBootstrap, /\.pipelineProcessPresent == false/)
+  assert.match(persistentBootstrap, /will remain online/)
+})
+
 test('filters progress chatter and reports the worker process exit signal', () => {
   const result = runWorkerScript(`
 import __future__, ast, json, re, signal

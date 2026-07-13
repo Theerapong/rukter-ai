@@ -125,6 +125,14 @@ const gpuLeaseOrchestrator = process.env.AMD_GPU_DIGITALOCEAN_TOKEN
       workerSourceBaseUrl: process.env.AMD_GPU_WORKER_SOURCE_BASE_URL,
     })
   : null
+const deploymentDrainQuietWindowMs = Math.max(5_000, Math.min(5 * 60_000, Number(process.env.DEPLOYMENT_DRAIN_QUIET_WINDOW_MS) || 30_000))
+const deploymentDrainCacheMs = Math.max(5_000, Math.min(30_000, Number(process.env.DEPLOYMENT_DRAIN_CACHE_MS) || 5_000))
+const localDeploymentDrains = new Map()
+let deploymentDrainAcquirePending = 0
+let deploymentDrainCache = null
+let deploymentDrainInspectInFlight = null
+let activeAdmittedRequests = 0
+let lastAdmissionActivityAtMs = Date.now()
 const amdStoryQueue = createSerialJobQueue({
   maxSize: amdStoryQueueMaxSize,
   runJob: processQueuedAmdStoryJob,
@@ -2672,14 +2680,17 @@ function publicStoryQueue(job) {
   }
 }
 
-function publicAmdQueueSnapshot(focusJobId = '') {
+function baseAmdQueueSnapshot(focusJobId = '') {
   pruneStoryJobs()
   const snapshot = amdStoryQueue.snapshot()
-  const inProgress = [...storyJobs.values()].filter((job) => (
+  const activeStoryJobs = [...storyJobs.values()].filter((job) => (
+    !['ready', 'failed', 'cancelled'].includes(job.status)
+  ))
+  const amdInProgress = activeStoryJobs.filter((job) => (
     job.requestedMode === 'amd_cinematic' && !['ready', 'failed', 'cancelled'].includes(job.status)
   ))
-  const planningJobs = inProgress.filter((job) => ['queued', 'analyzing'].includes(job.status)).length
-  const awaitingApprovalJobs = inProgress.filter((job) => job.status === 'awaiting_approval').length
+  const planningJobs = activeStoryJobs.filter((job) => ['queued', 'analyzing'].includes(job.status)).length
+  const awaitingApprovalJobs = activeStoryJobs.filter((job) => job.status === 'awaiting_approval').length
   const normalizedFocusId = String(focusJobId || '').trim()
   const focus = normalizedFocusId ? amdStoryQueue.position(normalizedFocusId) : null
   const pendingReady = snapshot.pending.filter((entry) => entry.ready).length
@@ -2699,7 +2710,10 @@ function publicAmdQueueSnapshot(focusJobId = '') {
     queuedJobs: snapshot.pending.length,
     readyJobs: pendingReady,
     preparingJobs: snapshot.pending.length - pendingReady,
-    inProgressJobs: inProgress.length,
+    inProgressJobs: activeStoryJobs.length,
+    activeStoryJobs: activeStoryJobs.length,
+    amdInProgressJobs: amdInProgress.length,
+    fastStoryJobs: activeStoryJobs.length - amdInProgress.length,
     planningJobs,
     awaitingApprovalJobs,
     focus: focus ? {
@@ -2713,6 +2727,216 @@ function publicAmdQueueSnapshot(focusJobId = '') {
     privacy: 'Queue details show anonymous Product Story job counts only; other job ids and user details are not exposed.',
     checkedAt: new Date().toISOString(),
   }
+}
+
+function localDeploymentDrainLocked() {
+  const now = Date.now()
+  for (const [drainId, expiresAtMs] of localDeploymentDrains) {
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= now) localDeploymentDrains.delete(drainId)
+  }
+  return deploymentDrainAcquirePending > 0 || localDeploymentDrains.size > 0
+}
+
+async function inspectDurableDeploymentDrain({ refresh = false } = {}) {
+  if (!gpuLeaseOrchestrator) {
+    return {
+      supported: false,
+      active: false,
+      state: 'unsupported',
+      drainId: '',
+      drainIds: [],
+      tags: [],
+      expiresAt: null,
+      retryAfterSeconds: 0,
+      checkedAt: new Date().toISOString(),
+      persistentWorkerCount: 0,
+      persistentWorkerIds: [],
+      expiredTags: [],
+    }
+  }
+  if (!refresh && deploymentDrainCache && Date.now() - deploymentDrainCache.checkedAtMs < deploymentDrainCacheMs) {
+    return deploymentDrainCache.value
+  }
+  if (deploymentDrainInspectInFlight) {
+    if (!refresh || deploymentDrainInspectInFlight.refresh) return deploymentDrainInspectInFlight.promise
+    await deploymentDrainInspectInFlight.promise.catch(() => {})
+    return inspectDurableDeploymentDrain({ refresh: true })
+  }
+  const promise = gpuLeaseOrchestrator.inspectDeploymentDrain()
+    .then((value) => {
+      deploymentDrainCache = { checkedAtMs: Date.now(), value }
+      return value
+    })
+    .finally(() => {
+      deploymentDrainInspectInFlight = null
+    })
+  deploymentDrainInspectInFlight = { promise, refresh }
+  return promise
+}
+
+function deploymentDrainStatus(queue, durableDrain, checkError = '', workerActivity = null) {
+  const localLocked = localDeploymentDrainLocked()
+  const drainIds = [...new Set([...(durableDrain?.drainIds || []), ...localDeploymentDrains.keys()])]
+  const quietForSeconds = Math.max(0, Math.floor((Date.now() - lastAdmissionActivityAtMs) / 1000))
+  const durableActive = durableDrain?.active === true
+  const active = localLocked || durableActive
+  const queueIdle = queue.activeStoryJobs === 0
+    && queue.queuedJobs === 0
+    && queue.readyJobs === 0
+    && queue.preparingJobs === 0
+    && queue.activeJobPresent === false
+  const readyForDeploy = durableActive
+    && !checkError
+    && activeAdmittedRequests === 0
+    && queueIdle
+    && workerActivity?.reachable === true
+    && workerActivity?.verifiable === true
+    && workerActivity?.idle === true
+    && quietForSeconds * 1000 >= deploymentDrainQuietWindowMs
+  const state = deploymentDrainAcquirePending > 0
+    ? 'acquiring'
+    : checkError
+      ? 'check_failed'
+      : active
+        ? 'active'
+        : durableDrain?.supported === false
+          ? 'unsupported'
+          : 'inactive'
+  return {
+    supported: durableDrain?.supported === true,
+    active,
+    state,
+    drainId: durableDrain?.drainId || (drainIds.length === 1 ? drainIds[0] : ''),
+    drainIds,
+    tags: durableDrain?.tags || [],
+    expiresAt: durableDrain?.expiresAt || null,
+    retryAfterSeconds: durableDrain?.retryAfterSeconds || (active ? 30 : 0),
+    checkedAt: durableDrain?.checkedAt || new Date().toISOString(),
+    persistentWorkerCount: Number(durableDrain?.persistentWorkerCount) || 0,
+    persistentWorkerIds: durableDrain?.persistentWorkerIds || [],
+    admissionLocked: active || Boolean(checkError),
+    activeAdmittedRequests,
+    quietForSeconds,
+    quietWindowSeconds: Math.ceil(deploymentDrainQuietWindowMs / 1000),
+    workerActivity: workerActivity || {
+      reachable: false,
+      verifiable: false,
+      idle: false,
+      reason: active ? 'Persistent AMD worker activity has not been verified yet.' : 'Worker activity is checked after the deployment drain is active.',
+    },
+    readyForDeploy,
+    ...(checkError ? { checkError } : {}),
+  }
+}
+
+function privacySafeDeploymentDrain(drain) {
+  return {
+    supported: drain.supported,
+    active: drain.admissionLocked,
+    state: drain.state,
+    expiresAt: drain.expiresAt,
+    retryAfterSeconds: drain.retryAfterSeconds,
+    checkedAt: drain.checkedAt,
+    admissionLocked: drain.admissionLocked,
+    activeAdmittedRequests: drain.activeAdmittedRequests,
+    quietForSeconds: drain.quietForSeconds,
+    quietWindowSeconds: drain.quietWindowSeconds,
+    workerActivity: {
+      reachable: drain.workerActivity?.reachable === true,
+      verifiable: drain.workerActivity?.verifiable === true,
+      idle: drain.workerActivity?.idle === true,
+    },
+    readyForDeploy: drain.readyForDeploy,
+  }
+}
+
+async function publicAmdQueueSnapshot(focusJobId = '', { refreshDrain = false, protectedDrainDetails = false } = {}) {
+  const queue = baseAmdQueueSnapshot(focusJobId)
+  let durableDrain
+  let checkError = ''
+  let workerActivity = null
+  try {
+    durableDrain = await inspectDurableDeploymentDrain({ refresh: refreshDrain })
+  } catch (error) {
+    checkError = error instanceof Error ? error.message : String(error)
+    durableDrain = deploymentDrainCache?.value || null
+  }
+  if ((durableDrain?.active === true || localDeploymentDrainLocked()) && gpuLeaseOrchestrator) {
+    try {
+      workerActivity = await gpuLeaseOrchestrator.inspectPersistentWorkerActivity()
+    } catch (error) {
+      workerActivity = {
+        reachable: false,
+        verifiable: false,
+        idle: false,
+        reason: error instanceof Error ? error.message : String(error),
+        checkedAt: new Date().toISOString(),
+      }
+    }
+  }
+  const drain = deploymentDrainStatus(queue, durableDrain, checkError, workerActivity)
+  return {
+    ...queue,
+    deploymentDrain: protectedDrainDetails ? drain : privacySafeDeploymentDrain(drain),
+    admission: {
+      locked: drain.admissionLocked,
+      activeRequests: drain.activeAdmittedRequests,
+      quietForSeconds: drain.quietForSeconds,
+      quietWindowSeconds: drain.quietWindowSeconds,
+    },
+    readyForDeploy: drain.readyForDeploy,
+  }
+}
+
+function rejectDeploymentDrain(res, drain, { checkFailed = false } = {}) {
+  const retryAfterSeconds = Math.max(1, Number(drain?.retryAfterSeconds) || 15)
+  res.setHeader('retry-after', String(retryAfterSeconds))
+  sendJson(res, 503, {
+    code: checkFailed ? 'deployment_drain_check_failed' : 'deployment_drain_active',
+    error: checkFailed
+      ? 'New work is paused because the deployment safety fence could not be verified. Retry shortly.'
+      : 'New work is paused briefly while Rukter deploys safely. Existing jobs will finish normally.',
+    retryAfterSeconds,
+    deploymentDrain: {
+      active: checkFailed || drain?.admissionLocked === true || drain?.active !== false,
+      state: drain?.state || (checkFailed ? 'check_failed' : 'active'),
+      expiresAt: drain?.expiresAt || null,
+    },
+  })
+}
+
+async function admitUserWorkload(req, res) {
+  const queue = baseAmdQueueSnapshot()
+  if (localDeploymentDrainLocked()) {
+    rejectDeploymentDrain(res, deploymentDrainStatus(queue, deploymentDrainCache?.value || null))
+    return false
+  }
+
+  let durableDrain
+  try {
+    durableDrain = await inspectDurableDeploymentDrain({ refresh: true })
+  } catch (error) {
+    rejectDeploymentDrain(res, deploymentDrainStatus(queue, deploymentDrainCache?.value || null, error instanceof Error ? error.message : String(error)), { checkFailed: true })
+    return false
+  }
+  const drain = deploymentDrainStatus(queue, durableDrain)
+  if (localDeploymentDrainLocked() || drain.active) {
+    rejectDeploymentDrain(res, drain)
+    return false
+  }
+
+  activeAdmittedRequests += 1
+  lastAdmissionActivityAtMs = Date.now()
+  let released = false
+  const releaseAdmission = () => {
+    if (released) return
+    released = true
+    activeAdmittedRequests = Math.max(0, activeAdmittedRequests - 1)
+    lastAdmissionActivityAtMs = Date.now()
+  }
+  res.once('finish', releaseAdmission)
+  res.once('close', releaseAdmission)
+  return true
 }
 
 function normalizeGpuTelemetry(value) {
@@ -3692,6 +3916,130 @@ function requireGpuControl(req, res) {
   return true
 }
 
+function deploymentControlQueue(queue) {
+  return {
+    activeJobPresent: queue.activeJobPresent,
+    queuedJobs: queue.queuedJobs,
+    readyJobs: queue.readyJobs,
+    preparingJobs: queue.preparingJobs,
+    inProgressJobs: queue.inProgressJobs,
+    activeStoryJobs: queue.activeStoryJobs,
+    amdInProgressJobs: queue.amdInProgressJobs,
+    fastStoryJobs: queue.fastStoryJobs,
+    planningJobs: queue.planningJobs,
+    awaitingApprovalJobs: queue.awaitingApprovalJobs,
+  }
+}
+
+async function deploymentControlPayload(extra = {}) {
+  const snapshot = await publicAmdQueueSnapshot('', { refreshDrain: false, protectedDrainDetails: true })
+  return {
+    ...snapshot.deploymentDrain,
+    queue: deploymentControlQueue(snapshot),
+    readyForDeploy: snapshot.readyForDeploy,
+    ...extra,
+  }
+}
+
+async function handleAcquireDeploymentDrain(req, res) {
+  if (!requireGpuControl(req, res)) return
+  deploymentDrainAcquirePending += 1
+  lastAdmissionActivityAtMs = Date.now()
+  let pending = true
+  let drainId = ''
+  try {
+    const rawBody = await readBody(req)
+    const parsed = rawBody ? JSON.parse(rawBody) : {}
+    drainId = typeof parsed.drainId === 'string' ? parsed.drainId.trim() : ''
+    const requestedTtlSeconds = Number(parsed.ttlSeconds)
+    const localTtlSeconds = Number.isFinite(requestedTtlSeconds)
+      ? Math.max(60, Math.min(6 * 60 * 60, Math.round(requestedTtlSeconds)))
+      : 45 * 60
+    localDeploymentDrains.set(drainId, Date.now() + localTtlSeconds * 1000)
+    const durableDrain = await gpuLeaseOrchestrator.acquireDeploymentDrain({
+      drainId,
+      ttlSeconds: requestedTtlSeconds,
+    })
+    const expiresAtMs = new Date(durableDrain.expiresAt || '').getTime()
+    localDeploymentDrains.set(drainId, Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() + localTtlSeconds * 1000)
+    deploymentDrainCache = { checkedAtMs: Date.now(), value: durableDrain }
+    deploymentDrainAcquirePending = Math.max(0, deploymentDrainAcquirePending - 1)
+    pending = false
+    sendJson(res, 201, await deploymentControlPayload({
+      ttlSeconds: durableDrain.ttlSeconds,
+    }))
+  } catch (error) {
+    if (drainId) localDeploymentDrains.delete(drainId)
+    if (error?.deploymentDrain) {
+      deploymentDrainCache = { checkedAtMs: Date.now(), value: error.deploymentDrain }
+    } else if (gpuLeaseOrchestrator) {
+      try {
+        const durableDrain = await gpuLeaseOrchestrator.inspectDeploymentDrain()
+        deploymentDrainCache = { checkedAtMs: Date.now(), value: durableDrain }
+        if (drainId && durableDrain.drainIds?.includes(drainId)) {
+          const expiresAtMs = new Date(durableDrain.expiresAt || '').getTime()
+          localDeploymentDrains.set(drainId, Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() + 60_000)
+        }
+      } catch {
+        // The pending local fence remains in force until this handler finishes.
+      }
+    }
+    const status = Number(error?.status) === 409
+      ? 409
+      : error instanceof SyntaxError || /Deployment drain id must/.test(error instanceof Error ? error.message : '')
+        ? 400
+        : 502
+    sendJson(res, status, {
+      code: error?.code || 'deployment_drain_acquire_failed',
+      error: error instanceof Error ? error.message : String(error),
+      ...(error?.deploymentDrain ? { deploymentDrain: error.deploymentDrain } : {}),
+    })
+  } finally {
+    if (pending) deploymentDrainAcquirePending = Math.max(0, deploymentDrainAcquirePending - 1)
+  }
+}
+
+async function handleGetDeploymentDrain(req, res) {
+  if (!requireGpuControl(req, res)) return
+  try {
+    const durableDrain = await inspectDurableDeploymentDrain({ refresh: true })
+    deploymentDrainCache = { checkedAtMs: Date.now(), value: durableDrain }
+    sendJson(res, 200, await deploymentControlPayload())
+  } catch (error) {
+    sendJson(res, 502, {
+      code: 'deployment_drain_check_failed',
+      error: error instanceof Error ? error.message : String(error),
+      readyForDeploy: false,
+    })
+  }
+}
+
+async function handleReleaseDeploymentDrain(req, res) {
+  if (!requireGpuControl(req, res)) return
+  let drainId = ''
+  try {
+    const rawBody = await readBody(req)
+    const parsed = rawBody ? JSON.parse(rawBody) : {}
+    drainId = typeof parsed.drainId === 'string' ? parsed.drainId.trim() : ''
+    const previousLocalExpiry = localDeploymentDrains.get(drainId)
+    localDeploymentDrains.set(drainId, previousLocalExpiry || Date.now() + 60_000)
+    const durableDrain = await gpuLeaseOrchestrator.releaseDeploymentDrain({ drainId })
+    deploymentDrainCache = { checkedAtMs: Date.now(), value: durableDrain }
+    localDeploymentDrains.delete(drainId)
+    sendJson(res, 200, await deploymentControlPayload({
+      releasedDrainId: durableDrain.releasedDrainId,
+      releasedTags: durableDrain.releasedTags,
+    }))
+  } catch (error) {
+    const status = error instanceof SyntaxError || /Deployment drain id must/.test(error instanceof Error ? error.message : '') ? 400 : 502
+    sendJson(res, status, {
+      code: 'deployment_drain_release_failed',
+      error: error instanceof Error ? error.message : String(error),
+      drainId,
+    })
+  }
+}
+
 async function handleStartGpuLease(req, res) {
   if (!requireGpuControl(req, res)) return
   try {
@@ -4627,12 +4975,19 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    sendJson(res, 200, { status: 'ok', service: 'rukter-ai-launch-agent' })
+    sendJson(res, 200, {
+      status: 'ok',
+      service: 'rukter-ai-launch-agent',
+      commitSha: process.env.RUKTER_AI_COMMIT_SHA || '',
+      deployId: process.env.RUKTER_AI_DEPLOY_ID || '',
+    })
     return
   }
 
   if (req.method === 'GET' && url.pathname === '/api/config') {
     ensureStorySession(req, res)
+    const configQueue = await publicAmdQueueSnapshot()
+    const configDrain = configQueue.deploymentDrain
     sendJson(res, 200, {
       dashboardUrl: process.env.RUKTER_DASHBOARD_URL || 'https://store-4.rukter.com/dashboard/theme',
       canonicalUrl: process.env.RUKTER_CANONICAL_URL || 'https://rukter.com',
@@ -4691,6 +5046,11 @@ const server = http.createServer(async (req, res) => {
       runtimePlatform: `${process.platform}/${process.arch === 'x64' ? 'amd64' : process.arch}`,
       mcpConfigured: Boolean(mcpAccessToken(req)),
       mcpEndpoint: mcpEndpoint(),
+      appCommitSha: process.env.RUKTER_AI_COMMIT_SHA || '',
+      deployId: process.env.RUKTER_AI_DEPLOY_ID || '',
+      deploymentDraining: configDrain.admissionLocked,
+      deploymentDrainState: configDrain.state,
+      deploymentDrainRetryAfterSeconds: configDrain.retryAfterSeconds,
     })
     return
   }
@@ -4723,7 +5083,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/story-queue') {
-    sendJson(res, 200, publicAmdQueueSnapshot(url.searchParams.get('jobId')))
+    sendJson(res, 200, await publicAmdQueueSnapshot(url.searchParams.get('jobId')))
     return
   }
 
@@ -4738,6 +5098,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/product-image') {
+    if (!await admitUserWorkload(req, res)) return
     await handleProductImageUpload(req, res)
     return
   }
@@ -4749,6 +5110,21 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/v1/leases') {
     await handleStartGpuLease(req, res)
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/deployment-drain/acquire') {
+    await handleAcquireDeploymentDrain(req, res)
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/v1/deployment-drain') {
+    await handleGetDeploymentDrain(req, res)
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/v1/deployment-drain/release') {
+    await handleReleaseDeploymentDrain(req, res)
     return
   }
 
@@ -4765,6 +5141,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/story-jobs') {
+    if (!await admitUserWorkload(req, res)) return
     await handleCreateStoryJob(req, res)
     return
   }
@@ -4777,6 +5154,8 @@ const server = http.createServer(async (req, res) => {
 
   const approveStoryMatch = url.pathname.match(/^\/api\/story-jobs\/([^/]+)\/approve$/)
   if (req.method === 'POST' && approveStoryMatch) {
+    // Approval belongs to a job that was admitted before the drain. Let that
+    // user finish; the deployment gate keeps waiting for its queue/process.
     const job = ownedStoryJob(req, res, decodeURIComponent(approveStoryMatch[1]))
     if (!job) return
     let approval = {}
@@ -4823,21 +5202,25 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/launch-kit') {
+    if (!await admitUserWorkload(req, res)) return
     await handleLaunchKit(req, res)
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/design-critique') {
+    if (!await admitUserWorkload(req, res)) return
     await handleDesignCritique(req, res)
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/export') {
+    if (!await admitUserWorkload(req, res)) return
     await handleExport(req, res)
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/rukter-draft') {
+    if (!await admitUserWorkload(req, res)) return
     await handleCreateRukterDraft(req, res)
     return
   }

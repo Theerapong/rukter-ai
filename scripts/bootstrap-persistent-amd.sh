@@ -133,6 +133,47 @@ for _ in $(seq 1 60); do
 done
 ssh "${ssh_options[@]}" "root@${droplet_ip}" true
 
+assert_remote_worker_idle_for_update() {
+  ssh "${ssh_options[@]}" "root@${droplet_ip}" bash -s <<'REMOTE_CHECK'
+set -euo pipefail
+
+if command -v docker >/dev/null 2>&1 \
+  && docker top rukter-amd-worker -eo pid,args 2>/dev/null \
+    | grep -Eq '[r]un_story_pipeline\.(sh|py)'; then
+  echo "Refusing to bootstrap the persistent AMD worker: a Product Story pipeline process is still running." >&2
+  exit 1
+fi
+
+health="$(curl -fsS --connect-timeout 3 --max-time 25 http://127.0.0.1:8080/health 2>/dev/null || true)"
+if [[ -n "${health}" ]]; then
+  if grep -Eq '"activeJobPresent"[[:space:]]*:[[:space:]]*true|"pipelineProcessPresent"[[:space:]]*:[[:space:]]*true' <<<"${health}"; then
+    echo "Refusing to bootstrap the persistent AMD worker: /health reports an active job or pipeline process." >&2
+    exit 1
+  fi
+  if grep -Eq '"activeJobPresent"[[:space:]]*:[[:space:]]*false' <<<"${health}" \
+    && grep -Eq '"pipelineProcessPresent"[[:space:]]*:[[:space:]]*false' <<<"${health}"; then
+    exit 0
+  fi
+  if grep -Eq '"acceptingJobs"[[:space:]]*:[[:space:]]*true' <<<"${health}"; then
+    exit 0
+  fi
+  echo "Refusing to bootstrap the persistent AMD worker: its activity state could not be proven idle." >&2
+  exit 1
+fi
+
+if systemctl is-active --quiet rukter-amd-worker.service 2>/dev/null \
+  || [[ "$(docker inspect -f '{{.State.Running}}' rukter-amd-worker 2>/dev/null || true)" == "true" ]]; then
+  echo "Refusing to bootstrap the persistent AMD worker: the running worker did not return a verifiable /health state." >&2
+  exit 1
+fi
+REMOTE_CHECK
+}
+
+# Do not even replace the persistent worker environment while a user render is
+# active. The downloaded worker bootstrap repeats this probe immediately before
+# its guarded service restart.
+assert_remote_worker_idle_for_update
+
 umask 077
 environment_file="$(mktemp)"
 trap 'rm -f "${environment_file}"' EXIT
@@ -184,14 +225,14 @@ REMOTE
 
 for _ in $(seq 1 120); do
   health="$(curl -fsS --connect-timeout 5 "http://${droplet_ip}:8080/health" 2>/dev/null || true)"
-  if jq -e --arg version "${worker_version}" '.status == "ok" and .available == true and .acceptingJobs == true and .workerVersion == $version' <<<"${health}" >/dev/null 2>&1; then
+  if jq -e --arg version "${worker_version}" '.status == "ok" and .available == true and .acceptingJobs == true and .activeJobPresent == false and .pipelineProcessPresent == false and .workerVersion == $version' <<<"${health}" >/dev/null 2>&1; then
     metrics_status="$(ssh "${ssh_options[@]}" "root@${droplet_ip}" "systemctl is-active do-agent 2>/dev/null || true")"
     if [[ "${metrics_status}" != "active" ]]; then
       ssh "${ssh_options[@]}" "root@${droplet_ip}" "systemctl status do-agent --no-pager 2>/dev/null || true" >&2
       echo "DigitalOcean metrics agent is not active on persistent AMD Droplet ${droplet_id}; Insights may show No Data." >&2
       exit 1
     fi
-    jq '{status,service,workerVersion,available,acceptingJobs,device,rocmVersion}' <<<"${health}"
+    jq '{status,service,workerVersion,available,acceptingJobs,activeJobPresent,pipelineProcessPresent,pipelineProcessPid,device,rocmVersion}' <<<"${health}"
     printf 'DigitalOcean metrics agent is active on persistent AMD Droplet %s.\n' "${droplet_id}"
     printf 'Persistent AMD Droplet %s is ready at %s and will remain online.\n' "${droplet_id}" "${droplet_ip}"
     exit 0

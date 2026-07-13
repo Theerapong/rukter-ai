@@ -173,6 +173,106 @@ test('ensures the persistent MI300X worker is ready for user jobs', async () => 
   assert.equal(lease.workerUrl, 'http://203.0.113.44:8080')
 })
 
+test('uses an owned renewable TTL tag as a durable deployment drain without changing worker lifecycle', async () => {
+  let nowMs = new Date('2026-07-13T08:00:00Z').getTime()
+  const drainId = 'pipeline_1234567890'
+  const otherDrainId = 'pipeline_0987654321'
+  const activeOtherTag = `rukter-deploy-drain-${otherDrainId}-until-${Math.floor((nowMs + 7_200_000) / 1000)}`
+  const droplet = {
+    id: 584070698,
+    status: 'active',
+    created_at: createdAt,
+    tags: ['rukter-product-story-persistent'],
+    networks: { v4: [{ type: 'public', ip_address: '203.0.113.44' }] },
+  }
+  const requests = []
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, method: options.method || 'GET', body: options.body })
+    if (url.includes('tag_name=rukter-product-story-persistent')) return json({ droplets: [droplet] })
+    if (url.endsWith('/v2/tags') && options.method === 'POST') return json({ tag: { name: JSON.parse(options.body).name } }, 201)
+    if (/\/v2\/tags\/[^/]+\/resources$/.test(url) && options.method === 'POST') {
+      const tagName = decodeURIComponent(url.match(/\/v2\/tags\/([^/]+)\/resources$/)[1])
+      droplet.tags.push(tagName)
+      return new Response(null, { status: 204 })
+    }
+    if (/\/v2\/tags\/[^/]+\/resources$/.test(url) && options.method === 'DELETE') {
+      const tagName = decodeURIComponent(url.match(/\/v2\/tags\/([^/]+)\/resources$/)[1])
+      droplet.tags = droplet.tags.filter((candidate) => candidate !== tagName)
+      return new Response(null, { status: 204 })
+    }
+    if (/\/v2\/tags\/[^/]+$/.test(url) && options.method === 'DELETE') return new Response(null, { status: 204 })
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    workerToken: 'control-token',
+    publicUrl: 'https://rukter.ai',
+    fetchImpl,
+    now: () => nowMs,
+  })
+
+  const acquired = await orchestrator.acquireDeploymentDrain({ drainId, ttlSeconds: 14_400 })
+  assert.equal(acquired.active, true)
+  assert.equal(acquired.drainId, drainId)
+  assert.equal(acquired.ttlSeconds, 14_400)
+  assert.match(acquired.tags[0], new RegExp(`^rukter-deploy-drain-${drainId}-until-`))
+  assert.ok(!requests.some((request) => request.url.includes('/droplets/584070698') && request.method === 'DELETE'))
+
+  const firstTag = acquired.tags[0]
+  nowMs += 60_000
+  const renewed = await orchestrator.acquireDeploymentDrain({ drainId, ttlSeconds: 18_000 })
+  assert.equal(renewed.active, true)
+  assert.equal(renewed.drainId, drainId)
+  assert.equal(renewed.ttlSeconds, 18_000)
+  assert.notEqual(renewed.tags[0], firstTag)
+  assert.equal(droplet.tags.filter((tag) => tag.includes(drainId)).length, 1)
+
+  droplet.tags.push(activeOtherTag)
+  const released = await orchestrator.releaseDeploymentDrain({ drainId })
+  assert.equal(released.active, true)
+  assert.deepEqual(released.drainIds, [otherDrainId])
+  assert.ok(droplet.tags.includes(activeOtherTag))
+  assert.ok(!droplet.tags.some((tag) => tag.includes(drainId)))
+  assert.ok(!requests.some((request) => request.url.includes('/droplets/584070698') && request.method === 'DELETE'))
+})
+
+test('deployment readiness can verify that the persistent worker has no active process', async () => {
+  const droplet = {
+    id: 584070698,
+    status: 'active',
+    created_at: createdAt,
+    tags: ['rukter-product-story-persistent'],
+    networks: { v4: [{ type: 'public', ip_address: '203.0.113.44' }] },
+  }
+  const fetchImpl = async (url) => {
+    if (url.includes('tag_name=rukter-product-story-persistent')) return json({ droplets: [droplet] })
+    if (url === 'http://203.0.113.44:8080/health') {
+      return json({
+        status: 'ok',
+        available: true,
+        acceptingJobs: true,
+        updatePending: false,
+        activeJobPresent: false,
+        pipelineProcessPresent: false,
+        workerVersion: 'test-sha',
+      })
+    }
+    throw new Error(`Unexpected request: ${url}`)
+  }
+  const orchestrator = createDigitalOceanGpuOrchestrator({
+    token: 'do-token',
+    workerToken: 'control-token',
+    publicUrl: 'https://rukter.ai',
+    fetchImpl,
+  })
+  const activity = await orchestrator.inspectPersistentWorkerActivity()
+  assert.equal(activity.reachable, true)
+  assert.equal(activity.verifiable, true)
+  assert.equal(activity.idle, true)
+  assert.equal(activity.activeJobPresent, false)
+  assert.equal(activity.pipelineProcessPresent, false)
+})
+
 test('bootstraps the DigitalOcean metrics agent for GPU Insights', () => {
   const bootstrap = readFileSync(new URL('../amd-worker/bootstrap.sh', import.meta.url), 'utf8')
   assert.match(bootstrap, /repos\.insights\.digitalocean\.com\/install\.sh/)

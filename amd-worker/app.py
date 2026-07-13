@@ -24,6 +24,7 @@ active_process: asyncio.subprocess.Process | None = None
 cancel_requested_jobs: set[str] = set()
 worker_state_lock = asyncio.Lock()
 TERMINAL_JOB_STATUSES = {"ready", "failed", "cancelled"}
+WORKER_UPDATE_LOCK = Path(os.getenv("WORKER_UPDATE_LOCK", "/opt/rukter/.update-lock"))
 
 
 def positive_env_int(name: str, default: int) -> int:
@@ -163,6 +164,36 @@ def require_token(authorization: str | None) -> None:
 
 def worker_auth_ready() -> bool:
     return bool(os.getenv("WORKER_TOKEN", "").strip()) or os.getenv("RUKTER_ALLOW_INSECURE_WORKER", "").strip().lower() == "true"
+
+
+def pipeline_process_is_present(process: asyncio.subprocess.Process | None) -> bool:
+    if process is None:
+        return False
+    if process.returncode is None:
+        return True
+    try:
+        # The pipeline is launched as a new session whose process-group id is
+        # the leader pid. A helper such as ffmpeg can briefly outlive that
+        # leader, so checking the process group keeps /health truthful until
+        # every pipeline descendant has exited.
+        os.killpg(process.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def worker_activity_snapshot() -> dict:
+    process = active_process
+    process_present = pipeline_process_is_present(process)
+    return {
+        "activeJobPresent": active_job_id is not None,
+        "pipelineProcessPresent": process_present,
+        # A local process id contains no product or user data and lets the
+        # deployment bootstrap prove which process is protecting a restart.
+        "pipelineProcessPid": process.pid if process_present and process is not None else None,
+    }
 
 
 def rocm_evidence() -> dict:
@@ -381,16 +412,27 @@ async def execute_story(job_id: str, request: StoryRequest) -> None:
 
 
 @app.get("/health")
-def health() -> dict:
-    evidence = rocm_evidence()
+async def health() -> dict:
+    evidence = await asyncio.to_thread(rocm_evidence)
     auth_ready = worker_auth_ready()
+    async with worker_state_lock:
+        activity = worker_activity_snapshot()
+    update_pending = WORKER_UPDATE_LOCK.exists()
     return {
         "status": "ok" if evidence["available"] and auth_ready else "not_ready",
         "service": "rukter-amd-story-worker",
         "workerVersion": os.getenv("WORKER_VERSION", "unknown"),
-        "acceptingJobs": evidence["available"] and auth_ready and active_job_id is None,
+        "acceptingJobs": (
+            evidence["available"]
+            and auth_ready
+            and not activity["activeJobPresent"]
+            and not activity["pipelineProcessPresent"]
+            and not update_pending
+        ),
         "authConfigured": auth_ready,
+        "updatePending": update_pending,
         "gpuTelemetry": collect_rocm_smi_metrics(),
+        **activity,
         **evidence,
     }
 
@@ -403,6 +445,8 @@ async def create_story_job(request: StoryRequest, background_tasks: BackgroundTa
     if not evidence["available"]:
         raise HTTPException(status_code=503, detail="AMD ROCm device is not ready.")
     async with worker_state_lock:
+        if WORKER_UPDATE_LOCK.exists():
+            raise HTTPException(status_code=503, detail="AMD GPU worker update is pending; retry this job shortly.")
         if active_job_id is not None:
             raise HTTPException(status_code=409, detail="AMD GPU worker is already running a Product Story job.")
         prune_job_history(limit=MAX_JOB_HISTORY - 1)

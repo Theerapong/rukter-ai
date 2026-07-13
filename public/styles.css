@@ -34,6 +34,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .header-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px}
 .icon-button,.icon-link{width:38px;height:38px;display:grid;place-items:center;border:1px solid var(--line);background:#fff;text-decoration:none;cursor:pointer;border-radius:4px}
 .icon-button svg,.icon-link svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.deployment-drain-banner{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:24px;padding:11px 28px;border-bottom:1px solid #e2c17d;background:#fff7e8;color:#2d2617}
+.deployment-drain-banner>div{display:flex;align-items:baseline;gap:14px;min-width:0}
+.deployment-drain-banner strong{font:850 11px/1.25 Archivo,sans-serif;text-transform:uppercase;white-space:nowrap}
+.deployment-drain-banner>div span{font-size:11px;line-height:1.45}
+.deployment-drain-banner>span{flex:0 0 auto;color:#8b5805;font:850 9px/1.35 Archivo,sans-serif;text-transform:uppercase;text-align:right}
 .compute-badge{height:30px;display:flex;align-items:center;gap:7px;padding:0 10px;border:1px solid var(--line);background:#fff;font-size:10px;font-weight:800;text-transform:uppercase;white-space:nowrap;cursor:pointer}
 .compute-badge i,.stage-state i{width:7px;height:7px;border-radius:50%;background:#8d8d8d}
 .compute-badge.is-active i,.stage-state.is-active i{background:var(--red);box-shadow:0 0 0 4px rgba(239,35,60,.12)}
@@ -320,8 +325,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   .upload-intro{padding-left:42px;padding-right:42px}
 }
 
+@media (min-width:1241px){body.is-deployment-draining .studio-view{height:calc(100vh - 126px);min-height:620px}}
+
 @media (max-width:900px){
   .app-header{grid-template-columns:1fr auto;padding:0 18px}.header-title{display:none}
+  .deployment-drain-banner{align-items:flex-start;flex-direction:column;gap:5px;padding:12px 20px}.deployment-drain-banner>div{display:block}.deployment-drain-banner strong{display:block;margin-bottom:4px;white-space:normal}.deployment-drain-banner>span{text-align:left}
   .upload-view{display:block}.upload-intro{border-right:0;border-bottom:1px solid var(--line);padding:48px 24px}.upload-intro h1{font-size:52px}.flow-summary{margin-top:40px}
   .upload-workbench{padding:34px 24px 60px;margin:0 auto}
 }

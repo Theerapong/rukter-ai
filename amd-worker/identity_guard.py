@@ -14,6 +14,12 @@ PRODUCT_COMPONENT_MIN_BBOX_RATIO = float(os.getenv("WAN_PRODUCT_COMPONENT_MIN_BB
 PRODUCT_TOKEN_OVERLAP_MIN = float(os.getenv("WAN_PRODUCT_TOKEN_OVERLAP_MIN", "0.08"))
 PRODUCT_COLOR_MIN_CHROMATIC_RATIO = float(os.getenv("WAN_COLOR_MIN_CHROMATIC_RATIO", "0.015"))
 PRODUCT_COLOR_MIN_PIXELS = int(os.getenv("WAN_COLOR_MIN_PIXELS", "50"))
+PRODUCT_EDGE_INTRUSION_THRESHOLD = float(os.getenv("WAN_EDGE_INTRUSION_THRESHOLD", "0.0025"))
+PRODUCT_EDGE_COMPONENT_MIN_AREA_RATIO = 0.0005
+PRODUCT_EDGE_OUTER_CENTROID_RATIO = 0.20
+PRODUCT_EDGE_MATCH_MIN_AREA_SCALE = 0.30
+PRODUCT_EDGE_MATCH_MIN_ASPECT_SCALE = 0.30
+PRODUCT_EDGE_MATCH_MIN_COLOR_OVERLAP = 0.30
 
 
 @dataclass(frozen=True)
@@ -166,6 +172,133 @@ def product_color_evidence(source: Image.Image, samples: list[Image.Image], thre
         "colorDistributionRequired": required,
         "colorDistributionThreshold": float(threshold),
         "sourceChromaticRatio": round(source_ratio, 4),
+    }
+
+
+def _edge_component_descriptors(image: Image.Image) -> list[dict]:
+    """Describe foreground components so generated objects can be matched to the source."""
+    rgb = image.convert("RGB")
+    mask = _foreground_mask(rgb)
+    height, width = mask.shape
+    image_area = max(1, height * width)
+    _, labels, components = _component_stats(mask)
+    hsv = np.asarray(rgb.convert("HSV"), dtype=np.uint8)
+    descriptors = []
+    for label, (left, top, component_width, component_height, area) in enumerate(components, start=1):
+        area_ratio = area / image_area
+        if area_ratio < PRODUCT_EDGE_COMPONENT_MIN_AREA_RATIO:
+            continue
+        pixels = hsv[labels == label]
+        histogram, _ = np.histogramdd(
+            pixels,
+            bins=(12, 4, 4),
+            range=((0, 256), (0, 256), (0, 256)),
+        )
+        histogram = histogram.astype(np.float64)
+        histogram /= max(1.0, float(histogram.sum()))
+        center_x = left + component_width / 2
+        center_y = top + component_height / 2
+        edges = []
+        if left <= 1:
+            edges.append("left")
+        if left + component_width >= width - 1:
+            edges.append("right")
+        if top <= 1:
+            edges.append("top")
+        if top + component_height >= height - 1:
+            edges.append("bottom")
+        spans_opposite_edges = (
+            ("left" in edges and "right" in edges)
+            or ("top" in edges and "bottom" in edges)
+        )
+        descriptors.append({
+            "areaRatio": area_ratio,
+            "aspectRatio": component_width / max(1, component_height),
+            "bbox": [left, top, component_width, component_height],
+            "edges": edges,
+            "outer": bool(edges) and not spans_opposite_edges and (
+                center_x < width * PRODUCT_EDGE_OUTER_CENTROID_RATIO
+                or center_x > width * (1 - PRODUCT_EDGE_OUTER_CENTROID_RATIO)
+                or center_y < height * PRODUCT_EDGE_OUTER_CENTROID_RATIO
+                or center_y > height * (1 - PRODUCT_EDGE_OUTER_CENTROID_RATIO)
+            ),
+            "histogram": histogram,
+        })
+    return descriptors
+
+
+def _edge_component_match_score(sample: dict, source: dict) -> float | None:
+    area_scale = min(sample["areaRatio"], source["areaRatio"]) / max(sample["areaRatio"], source["areaRatio"])
+    aspect_scale = min(sample["aspectRatio"], source["aspectRatio"]) / max(
+        sample["aspectRatio"], source["aspectRatio"]
+    )
+    color_overlap = float(np.minimum(sample["histogram"], source["histogram"]).sum())
+    if (
+        area_scale < PRODUCT_EDGE_MATCH_MIN_AREA_SCALE
+        or aspect_scale < PRODUCT_EDGE_MATCH_MIN_ASPECT_SCALE
+        or color_overlap < PRODUCT_EDGE_MATCH_MIN_COLOR_OVERLAP
+    ):
+        return None
+    return area_scale + aspect_scale + color_overlap
+
+
+def _unmatched_outer_edge_components(source: list[dict], sample: list[dict]) -> list[dict]:
+    """One source component can explain at most one generated component."""
+    compatible_pairs = []
+    for sample_index, component in enumerate(sample):
+        for source_index, source_component in enumerate(source):
+            score = _edge_component_match_score(component, source_component)
+            if score is not None:
+                compatible_pairs.append((score, sample_index, source_index))
+    matched_sample = set()
+    matched_source = set()
+    for _, sample_index, source_index in sorted(compatible_pairs, reverse=True):
+        if sample_index in matched_sample or source_index in matched_source:
+            continue
+        matched_sample.add(sample_index)
+        matched_source.add(source_index)
+    return [
+        component
+        for sample_index, component in enumerate(sample)
+        if sample_index not in matched_sample and component["outer"]
+    ]
+
+
+def _edge_component_evidence(component: dict) -> dict:
+    return {
+        "areaRatio": round(float(component["areaRatio"]), 5),
+        "bbox": list(component["bbox"]),
+        "edges": list(component["edges"]),
+    }
+
+
+def edge_intrusion_evidence(
+    source: Image.Image,
+    samples: list[Image.Image],
+    threshold: float = PRODUCT_EDGE_INTRUSION_THRESHOLD,
+) -> dict:
+    source_components = _edge_component_descriptors(source)
+    unmatched_samples = [
+        _unmatched_outer_edge_components(source_components, _edge_component_descriptors(sample))
+        for sample in samples
+    ]
+    areas = [sum(component["areaRatio"] for component in components) for components in unmatched_samples]
+    worst_index = int(np.argmax(areas)) if areas else 0
+    maximum = areas[worst_index] if areas else 0.0
+    worst_components = unmatched_samples[worst_index] if unmatched_samples else []
+    worst_edges = sorted({edge for component in worst_components for edge in component["edges"]})
+    return {
+        "edgeIntrusionDetected": maximum >= threshold,
+        "edgeIntrusionAreaMax": round(maximum, 5),
+        "edgeIntrusionAreaSamples": [round(value, 5) for value in areas],
+        "edgeIntrusionSourceComponentCount": len(source_components),
+        "edgeIntrusionThreshold": float(threshold),
+        "edgeIntrusionSampleIndex": worst_index,
+        "edgeIntrusionEdges": worst_edges,
+        "edgeIntrusionComponentCount": len(worst_components),
+        "edgeIntrusionUnmatchedComponents": [
+            _edge_component_evidence(component) for component in worst_components
+        ],
     }
 
 

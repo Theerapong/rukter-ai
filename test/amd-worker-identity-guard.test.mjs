@@ -130,6 +130,88 @@ print(json.dumps({
   assert.ok(result.drifted.colorDistributionMin < 0.20)
 })
 
+test('detects a disconnected foreign object entering from a frame edge', { skip: skipReason }, () => {
+  const result = runIdentityGuard(`
+import json, sys
+sys.path.insert(0, 'amd-worker')
+from PIL import Image, ImageDraw
+from identity_guard import edge_intrusion_evidence
+
+source = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(source).rectangle((80, 35, 240, 220), fill=(30, 130, 205))
+
+preserved = source.copy()
+
+shifted_product = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(shifted_product).rectangle((0, 35, 250, 220), fill=(30, 130, 205))
+
+contaminated = source.copy()
+ImageDraw.Draw(contaminated).rectangle((300, 70, 319, 165), fill=(20, 25, 30))
+
+narrow_source = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(narrow_source).rectangle((140, 25, 175, 220), fill=(30, 130, 205))
+narrow_panned = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(narrow_panned).rectangle((0, 25, 35, 220), fill=(30, 130, 205))
+
+set_source = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(set_source).rectangle((55, 45, 115, 210), fill=(30, 130, 205))
+ImageDraw.Draw(set_source).rectangle((205, 65, 260, 210), fill=(205, 100, 35))
+set_panned = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(set_panned).rectangle((20, 45, 80, 210), fill=(30, 130, 205))
+ImageDraw.Draw(set_panned).rectangle((264, 65, 319, 210), fill=(205, 100, 35))
+
+gradient = Image.new('RGB', (320, 240), 'white')
+gradient_pixels = gradient.load()
+for y in range(240):
+  for x in range(320):
+    value = 245 - round(45 * x / 319)
+    gradient_pixels[x, y] = (value, value, value)
+ImageDraw.Draw(gradient).rectangle((80, 35, 240, 220), fill=(30, 130, 205))
+
+edge_source = source.copy()
+ImageDraw.Draw(edge_source).rectangle((300, 70, 319, 165), fill=(190, 90, 25))
+opposite_edge_intrusion = edge_source.copy()
+ImageDraw.Draw(opposite_edge_intrusion).rectangle((0, 75, 12, 155), fill=(20, 25, 30))
+
+collision_source = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(collision_source).rectangle((130, 90, 190, 150), fill=(30, 130, 205))
+lookalike_intrusion = collision_source.copy()
+ImageDraw.Draw(lookalike_intrusion).rectangle((0, 85, 70, 155), fill=(30, 130, 205))
+
+lookalike_background = Image.new('RGB', (320, 240), 'white')
+ImageDraw.Draw(lookalike_background).rectangle((0, 90, 60, 150), fill=(30, 130, 205))
+ImageDraw.Draw(lookalike_background).rectangle((130, 35, 192, 97), fill=(30, 130, 205))
+
+print(json.dumps({
+  'preserved': edge_intrusion_evidence(source, [preserved], 0.0025),
+  'shiftedProduct': edge_intrusion_evidence(source, [shifted_product], 0.0025),
+  'contaminated': edge_intrusion_evidence(source, [contaminated], 0.0025),
+  'narrowPanned': edge_intrusion_evidence(narrow_source, [narrow_panned], 0.0025),
+  'setPanned': edge_intrusion_evidence(set_source, [set_panned], 0.0025),
+  'gradient': edge_intrusion_evidence(source, [gradient], 0.0025),
+  'oppositeEdge': edge_intrusion_evidence(edge_source, [opposite_edge_intrusion], 0.0025),
+  'lookalikeIntrusion': edge_intrusion_evidence(collision_source, [lookalike_intrusion], 0.0025),
+  'lookalikeBackground': edge_intrusion_evidence(collision_source, [lookalike_background], 0.0025),
+}))
+`)
+
+  assert.equal(result.preserved.edgeIntrusionDetected, false)
+  assert.equal(result.shiftedProduct.edgeIntrusionDetected, false)
+  assert.equal(result.narrowPanned.edgeIntrusionDetected, false)
+  assert.equal(result.setPanned.edgeIntrusionDetected, false)
+  assert.equal(result.gradient.edgeIntrusionDetected, false)
+  assert.equal(result.contaminated.edgeIntrusionDetected, true)
+  assert.ok(result.contaminated.edgeIntrusionAreaMax > 0.0025)
+  assert.deepEqual(result.contaminated.edgeIntrusionEdges, ['right'])
+  assert.equal(result.contaminated.edgeIntrusionComponentCount, 1)
+  assert.equal(result.contaminated.edgeIntrusionUnmatchedComponents.length, 1)
+  assert.equal(result.oppositeEdge.edgeIntrusionDetected, true)
+  assert.deepEqual(result.oppositeEdge.edgeIntrusionEdges, ['left'])
+  assert.equal(result.lookalikeIntrusion.edgeIntrusionDetected, true)
+  assert.deepEqual(result.lookalikeIntrusion.edgeIntrusionEdges, ['left'])
+  assert.equal(result.lookalikeBackground.edgeIntrusionDetected, false)
+})
+
 test('ships the identity guard helper through every AMD worker bootstrap path', () => {
   const dockerfile = readFileSync(path.join(repoRoot, 'amd-worker', 'Dockerfile'), 'utf8')
   const bootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')
@@ -171,6 +253,8 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /identity_evidence\(identity_source, frames/)
   assert.match(pipeline, /product_color_distribution_drift/)
   assert.match(pipeline, /product_color_evidence\(source, samples, COLOR_DISTRIBUTION_THRESHOLD\)/)
+  assert.match(pipeline, /foreign_edge_intrusion/)
+  assert.match(pipeline, /edge_intrusion_evidence\(source, samples, EDGE_INTRUSION_THRESHOLD\)/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\.get\("cinematicPrompt"/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\["cinematicPrompt"\]/)
   assert.match(app, /STORY_PIPELINE_TIMEOUT_SECONDS/)
@@ -355,6 +439,7 @@ test('builds product-agnostic retries from identity locks and typed failure code
   assert.match(pipeline, /clip_similarity_below_threshold/)
   assert.match(pipeline, /ocr_retention_below_threshold/)
   assert.match(pipeline, /human_product_occlusion/)
+  assert.match(pipeline, /foreign_edge_intrusion/)
   assert.match(pipeline, /"attemptHistory"/)
   assert.match(pipeline, /"observedFailureCodes"/)
 })
@@ -400,7 +485,7 @@ source = open('amd-worker/run_story_pipeline.py', encoding='utf-8').read()
 tree = ast.parse(source)
 names = {
   'DEFAULT_IDENTITY_LOCKS', 'FAILURE_CODE_CLIP_SIMILARITY', 'FAILURE_CODE_OCR_RETENTION',
-  'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_CODE_COLOR_DISTRIBUTION',
+  'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_CODE_COLOR_DISTRIBUTION', 'FAILURE_CODE_EDGE_INTRUSION',
   'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS', 'PREVENTIVE_HUMAN_NEGATIVE_TERMS',
   'HUMAN_NEGATIVE_PATTERN', 'HUMAN_PROHIBITION_PATTERN', 'normalized_identity_locks',
   'retry_directives', 'apply_people_policy', 'evenly_spaced_frame_indices',

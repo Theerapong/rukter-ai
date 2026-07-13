@@ -16,7 +16,7 @@ import torch
 from PIL import Image, ImageOps
 from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
 from diffusers.utils import export_to_video
-from identity_guard import product_color_evidence, product_ocr_evidence, requires_ocr_retention
+from identity_guard import edge_intrusion_evidence, product_color_evidence, product_ocr_evidence, requires_ocr_retention
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -35,6 +35,7 @@ HUMAN_CONTAMINATION_THRESHOLD = float(os.getenv("WAN_HUMAN_CONTAMINATION_THRESHO
 HUMAN_CONTAMINATION_MARGIN = float(os.getenv("WAN_HUMAN_CONTAMINATION_MARGIN", "0.012"))
 HUMAN_CONTAMINATION_SOURCE_DELTA = float(os.getenv("WAN_HUMAN_CONTAMINATION_SOURCE_DELTA", "0.020"))
 COLOR_DISTRIBUTION_THRESHOLD = float(os.getenv("WAN_COLOR_DISTRIBUTION_THRESHOLD", "0.20"))
+EDGE_INTRUSION_THRESHOLD = float(os.getenv("WAN_EDGE_INTRUSION_THRESHOLD", "0.0025"))
 OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
 SOURCE_MAX_BYTES = int(os.getenv("RUKTER_SOURCE_MAX_BYTES", str(8 * 1024 * 1024)))
 SOURCE_MAX_PIXELS = int(os.getenv("RUKTER_SOURCE_MAX_PIXELS", "32000000"))
@@ -80,6 +81,7 @@ FAILURE_CODE_CLIP_SIMILARITY = "clip_similarity_below_threshold"
 FAILURE_CODE_OCR_RETENTION = "ocr_retention_below_threshold"
 FAILURE_CODE_HUMAN_CONTAMINATION = "human_product_occlusion"
 FAILURE_CODE_COLOR_DISTRIBUTION = "product_color_distribution_drift"
+FAILURE_CODE_EDGE_INTRUSION = "foreign_edge_intrusion"
 FAILURE_RETRY_INSTRUCTIONS = {
     FAILURE_CODE_CLIP_SIMILARITY: "reduce camera motion and keep the complete source geometry continuously recognizable",
     FAILURE_CODE_OCR_RETENTION: "keep visible logo and packaging text front-facing, stable, and legible",
@@ -88,6 +90,9 @@ FAILURE_RETRY_INSTRUCTIONS = {
         "hand, arm, and body part from the frame while preserving source artwork"
     ),
     FAILURE_CODE_COLOR_DISTRIBUTION: "restore the exact source hue and saturation and remove every new foreground or edge color",
+    FAILURE_CODE_EDGE_INTRUSION: (
+        "remove the unmatched foreground component entering from the frame edge because it is not present in the source"
+    ),
 }
 FAILURE_NEGATIVE_TERMS = {
     FAILURE_CODE_CLIP_SIMILARITY: "changed identity, altered geometry, changed component count, product morphing",
@@ -97,6 +102,7 @@ FAILURE_NEGATIVE_TERMS = {
         "newly added human-shaped subject, intrusive body part not present in reference"
     ),
     FAILURE_CODE_COLOR_DISTRIBUTION: "recolored product, hue shift, saturation shift, color cast, foreign object, colored artifact",
+    FAILURE_CODE_EDGE_INTRUSION: "foreign disconnected edge object not present in source, intrusive extra foreground object",
 }
 PREVENTIVE_HUMAN_NEGATIVE_TERMS = (
     "extra foreground figure not present in reference, foreign person entering frame edge, "
@@ -201,6 +207,8 @@ def identity_failure_codes(evidence: dict) -> list[str]:
         evidence.get("colorDistributionThreshold", COLOR_DISTRIBUTION_THRESHOLD)
     ):
         codes.append(FAILURE_CODE_COLOR_DISTRIBUTION)
+    if evidence.get("edgeIntrusionDetected"):
+        codes.append(FAILURE_CODE_EDGE_INTRUSION)
     return codes
 
 
@@ -586,6 +594,8 @@ def identity_evidence(
         allow_people=allow_people,
     )
     color_evidence = product_color_evidence(source, samples, COLOR_DISTRIBUTION_THRESHOLD)
+    edge_evidence = edge_intrusion_evidence(source, samples, EDGE_INTRUSION_THRESHOLD)
+    edge_evidence["edgeIntrusionFrame"] = sampled_frame_indices[edge_evidence["edgeIntrusionSampleIndex"]]
     source_ocr = product_ocr_evidence(source)
     sampled_ocr = [product_ocr_evidence(frame) for frame in samples]
     source_tokens = source_ocr["productTokens"]
@@ -623,6 +633,7 @@ def identity_evidence(
         "clipFallbackThreshold": IDENTITY_CLIP_FALLBACK_THRESHOLD,
         "threshold": IDENTITY_THRESHOLD,
         **color_evidence,
+        **edge_evidence,
         **contamination,
     }
     evidence["failureCodes"] = identity_failure_codes(evidence)
@@ -646,6 +657,15 @@ def attempt_evidence(evidence: dict) -> dict:
         "humanContaminationSourceDelta": evidence.get("humanContaminationSourceDelta"),
         "colorDistributionMin": evidence.get("colorDistributionMin"),
         "colorDistributionRequired": evidence.get("colorDistributionRequired"),
+        "edgeIntrusionDetected": evidence.get("edgeIntrusionDetected"),
+        "edgeIntrusionAreaMax": evidence.get("edgeIntrusionAreaMax"),
+        "edgeIntrusionAreaSamples": list(evidence.get("edgeIntrusionAreaSamples", [])),
+        "edgeIntrusionThreshold": evidence.get("edgeIntrusionThreshold"),
+        "edgeIntrusionFrame": evidence.get("edgeIntrusionFrame"),
+        "edgeIntrusionEdges": list(evidence.get("edgeIntrusionEdges", [])),
+        "edgeIntrusionSourceComponentCount": evidence.get("edgeIntrusionSourceComponentCount"),
+        "edgeIntrusionComponentCount": evidence.get("edgeIntrusionComponentCount"),
+        "edgeIntrusionUnmatchedComponents": list(evidence.get("edgeIntrusionUnmatchedComponents", [])),
         "allowPeople": evidence.get("allowPeople"),
         "sampledFrameIndices": list(evidence.get("sampledFrameIndices", [])),
     }
@@ -858,7 +878,10 @@ def main() -> None:
                 for item in evidence
             ],
             "shotCount": len(evidence),
-            "method": "Wan 2.2 TI2V plus five-frame CLIP similarity, OCR retention, and shot policy checks",
+            "method": (
+                "Wan 2.2 TI2V plus five-frame CLIP similarity, OCR retention, color distribution, "
+                "foreign edge intrusion, and shot policy checks"
+            ),
             "model": MODEL_ID,
             "fps": FPS,
             "numFramesPerShot": generated_frame_counts[0],

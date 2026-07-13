@@ -117,6 +117,15 @@ HUMAN_PROHIBITION_PATTERN = re.compile(
     r"(?:\s*,\s*no\s+(?:people|persons?|humans?|hands?|fingers?|arms?|body parts?))*[^.]*\.?",
     re.IGNORECASE,
 )
+IDENTITY_STRUCTURE_PATTERN = re.compile(
+    r"\b(?:total|count|set|pair|piece|pieces|item|items|unit|units|group|collection|bundle|pack)\b",
+    re.IGNORECASE,
+)
+IDENTITY_COLOR_PATTERN = re.compile(r"\b(?:color|colors|colour|colours|hue|hues)\b", re.IGNORECASE)
+IDENTITY_POSITION_PATTERN = re.compile(
+    r"\b(?:left|right|front|rear|back|center|centre|top|bottom|upper|lower|position|positions|arrangement|layout|row|rows)\b",
+    re.IGNORECASE,
+)
 
 
 def positive_env_int(name: str, default: int) -> int:
@@ -191,6 +200,26 @@ def normalized_identity_locks(shot: dict) -> list[str]:
             if text and text not in locks:
                 locks.append(text)
     return locks or list(DEFAULT_IDENTITY_LOCKS)
+
+
+def first_attempt_identity_directive(identity_locks: list[str], retrying: bool) -> str:
+    """Add the two most useful structured locks before the first Wan pass only."""
+    if retrying or not identity_locks:
+        return ""
+
+    def priority(lock: str) -> int:
+        has_color = bool(IDENTITY_COLOR_PATTERN.search(lock))
+        has_position = bool(IDENTITY_POSITION_PATTERN.search(lock))
+        score = 4 if IDENTITY_STRUCTURE_PATTERN.search(lock) else 0
+        score += 6 if has_color and has_position else 2 if has_color else 1 if has_position else 0
+        return score
+
+    ranked = sorted(enumerate(identity_locks), key=lambda item: (-priority(item[1]), item[0]))[:2]
+    selected = [lock for _, lock in sorted(ranked, key=lambda item: item[0])]
+    return (
+        f" Observed source identity locks: {'; '.join(selected)}. "
+        "Preserve every listed count, arrangement, color assignment, and position exactly."
+    )
 
 
 def identity_failure_codes(evidence: dict) -> list[str]:
@@ -780,6 +809,7 @@ def main() -> None:
                 )
             prompt = str(shot.get("renderPrompt") or shot["cinematicPrompt"])
             negative_prompt = str(shot.get("negativePrompt", ""))
+            prompt = f"{prompt}{first_attempt_identity_directive(identity_locks, retrying)}"
             prompt, negative_prompt = apply_people_policy(prompt, negative_prompt, allow_people)
             if retrying:
                 retry_prompt, retry_negative = retry_directives(identity_locks, previous_failure_codes, allow_people)

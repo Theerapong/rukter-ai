@@ -260,6 +260,11 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /edge_intrusion_evidence\(source, samples, EDGE_INTRUSION_THRESHOLD\)/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\.get\("cinematicPrompt"/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\["cinematicPrompt"\]/)
+  assert.match(pipeline, /first_attempt_identity_directive\(identity_locks, retrying\)/)
+  assert.ok(
+    pipeline.indexOf('first_attempt_identity_directive(identity_locks, retrying)')
+      < pipeline.indexOf('apply_people_policy(prompt, negative_prompt, allow_people)'),
+  )
   assert.match(app, /STORY_PIPELINE_TIMEOUT_SECONDS/)
   assert.match(app, /cinematicPrompt: str = Field\(min_length=1, max_length=12_000\)/)
   assert.doesNotMatch(app, /timeout=18 \* 60/)
@@ -491,7 +496,8 @@ names = {
   'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_CODE_COLOR_DISTRIBUTION', 'FAILURE_CODE_EDGE_INTRUSION',
   'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS', 'PREVENTIVE_HUMAN_NEGATIVE_TERMS',
   'HUMAN_NEGATIVE_PATTERN', 'HUMAN_PROHIBITION_PATTERN', 'normalized_identity_locks',
-  'retry_directives', 'apply_people_policy', 'evenly_spaced_frame_indices',
+  'IDENTITY_STRUCTURE_PATTERN', 'IDENTITY_COLOR_PATTERN', 'IDENTITY_POSITION_PATTERN',
+  'first_attempt_identity_directive', 'retry_directives', 'apply_people_policy', 'evenly_spaced_frame_indices',
 }
 selected = []
 for node in tree.body:
@@ -507,6 +513,15 @@ module = ast.Module(body=selected, type_ignores=[])
 namespace = {}
 exec(compile(ast.fix_missing_locations(module), 'amd-worker/run_story_pipeline.py', 'exec', flags=__future__.annotations.compiler_flag), namespace)
 locks = namespace['normalized_identity_locks']({'identityLocks': ['amber glass bottle', 'black dropper cap']})
+first_identity_prompt = namespace['first_attempt_identity_directive']([
+  'Four dual-caster wheels visible on every piece',
+  'Seven total pieces: four larger rear, three smaller front',
+  'Exact color assignment: rear-left teal, rear-center navy, front-center magenta, front-right yellow',
+], False)
+retry_identity_prompt = namespace['first_attempt_identity_directive']([
+  'Seven total pieces: four larger rear, three smaller front',
+  'Exact color assignment: rear-left teal, rear-center navy, front-center magenta, front-right yellow',
+], True)
 retry_prompt, retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], True)
 product_retry_prompt, product_retry_negative = namespace['retry_directives'](locks, ['ocr_retention_below_threshold'], False)
 people_prompt, people_negative = namespace['apply_people_policy'](
@@ -516,6 +531,8 @@ people_prompt, people_negative = namespace['apply_people_policy'](
 )
 print(json.dumps({
   'locks': locks,
+  'firstIdentityPrompt': first_identity_prompt,
+  'retryIdentityPrompt': retry_identity_prompt,
   'retryPrompt': retry_prompt,
   'retryNegative': retry_negative,
   'productRetryPrompt': product_retry_prompt,
@@ -527,6 +544,11 @@ print(json.dumps({
 `)
 
   assert.deepEqual(result.locks, ['amber glass bottle', 'black dropper cap'])
+  assert.match(result.firstIdentityPrompt, /Seven total pieces/)
+  assert.match(result.firstIdentityPrompt, /front-right yellow/)
+  assert.doesNotMatch(result.firstIdentityPrompt, /dual-caster wheels/)
+  assert.ok(result.firstIdentityPrompt.length <= 620)
+  assert.equal(result.retryIdentityPrompt, '')
   assert.match(result.retryPrompt, /amber glass bottle/)
   assert.match(result.retryPrompt, /packaging text/)
   assert.doesNotMatch(result.retryNegative, /person|human|hand/i)

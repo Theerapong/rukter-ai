@@ -16,7 +16,7 @@ import torch
 from PIL import Image, ImageOps
 from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
 from diffusers.utils import export_to_video
-from identity_guard import product_ocr_evidence, requires_ocr_retention
+from identity_guard import product_color_evidence, product_ocr_evidence, requires_ocr_retention
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -33,6 +33,7 @@ IDENTITY_CLIP_FALLBACK_THRESHOLD = float(os.getenv("WAN_IDENTITY_CLIP_FALLBACK_T
 OCR_RETENTION_THRESHOLD = float(os.getenv("WAN_OCR_RETENTION_THRESHOLD", "0.15"))
 HUMAN_CONTAMINATION_THRESHOLD = float(os.getenv("WAN_HUMAN_CONTAMINATION_THRESHOLD", "0.225"))
 HUMAN_CONTAMINATION_MARGIN = float(os.getenv("WAN_HUMAN_CONTAMINATION_MARGIN", "0.012"))
+COLOR_DISTRIBUTION_THRESHOLD = float(os.getenv("WAN_COLOR_DISTRIBUTION_THRESHOLD", "0.20"))
 OUTPUT_ROOT = Path(os.getenv("RUKTER_OUTPUT_ROOT", "/var/lib/rukter-outputs"))
 SOURCE_MAX_BYTES = int(os.getenv("RUKTER_SOURCE_MAX_BYTES", str(8 * 1024 * 1024)))
 SOURCE_MAX_PIXELS = int(os.getenv("RUKTER_SOURCE_MAX_PIXELS", "32000000"))
@@ -66,15 +67,18 @@ DEFAULT_IDENTITY_LOCKS = (
 FAILURE_CODE_CLIP_SIMILARITY = "clip_similarity_below_threshold"
 FAILURE_CODE_OCR_RETENTION = "ocr_retention_below_threshold"
 FAILURE_CODE_HUMAN_CONTAMINATION = "human_product_occlusion"
+FAILURE_CODE_COLOR_DISTRIBUTION = "product_color_distribution_drift"
 FAILURE_RETRY_INSTRUCTIONS = {
     FAILURE_CODE_CLIP_SIMILARITY: "reduce camera motion and keep the complete source geometry continuously recognizable",
     FAILURE_CODE_OCR_RETENTION: "keep visible logo and packaging text front-facing, stable, and legible",
     FAILURE_CODE_HUMAN_CONTAMINATION: "remove every person, hand, arm, and body part from the frame",
+    FAILURE_CODE_COLOR_DISTRIBUTION: "restore the exact source hue and saturation and remove every new foreground or edge color",
 }
 FAILURE_NEGATIVE_TERMS = {
     FAILURE_CODE_CLIP_SIMILARITY: "changed identity, altered geometry, changed component count, product morphing",
     FAILURE_CODE_OCR_RETENTION: "warped logo, changed label, missing text, unreadable text",
     FAILURE_CODE_HUMAN_CONTAMINATION: "person, human, hand, fingers, arm, skin, wrist, forearm, body part",
+    FAILURE_CODE_COLOR_DISTRIBUTION: "recolored product, hue shift, saturation shift, color cast, foreign object, colored artifact",
 }
 HUMAN_NEGATIVE_PATTERN = re.compile(
     r"\b(?:person|people|human|body|body part|hand|hands|finger|fingers|arm|arms|skin|wrist|forearm|nails|fingernails)\b",
@@ -171,6 +175,10 @@ def identity_failure_codes(evidence: dict) -> list[str]:
         codes.append(FAILURE_CODE_OCR_RETENTION)
     if evidence.get("humanContaminationDetected"):
         codes.append(FAILURE_CODE_HUMAN_CONTAMINATION)
+    if evidence.get("colorDistributionRequired") and float(evidence.get("colorDistributionMin", 0)) < float(
+        evidence.get("colorDistributionThreshold", COLOR_DISTRIBUTION_THRESHOLD)
+    ):
+        codes.append(FAILURE_CODE_COLOR_DISTRIBUTION)
     return codes
 
 
@@ -458,6 +466,7 @@ def identity_evidence(
     sample_features = features[1:]
     similarities = (sample_features @ features[0]).detach().float().cpu().tolist()
     contamination = human_contamination_evidence(sample_features, clip_model, clip_processor, allow_people=allow_people)
+    color_evidence = product_color_evidence(source, samples, COLOR_DISTRIBUTION_THRESHOLD)
     source_ocr = product_ocr_evidence(source)
     sampled_ocr = [product_ocr_evidence(frame) for frame in samples]
     source_tokens = source_ocr["productTokens"]
@@ -494,6 +503,7 @@ def identity_evidence(
         "ocrRetentionReason": ocr_retention_reason,
         "clipFallbackThreshold": IDENTITY_CLIP_FALLBACK_THRESHOLD,
         "threshold": IDENTITY_THRESHOLD,
+        **color_evidence,
         **contamination,
     }
     evidence["failureCodes"] = identity_failure_codes(evidence)
@@ -511,6 +521,8 @@ def attempt_evidence(evidence: dict) -> dict:
         "ocrRetentionRequired": evidence.get("ocrRetentionRequired"),
         "humanContaminationDetected": evidence.get("humanContaminationDetected"),
         "humanContaminationObserved": evidence.get("humanContaminationObserved"),
+        "colorDistributionMin": evidence.get("colorDistributionMin"),
+        "colorDistributionRequired": evidence.get("colorDistributionRequired"),
         "allowPeople": evidence.get("allowPeople"),
         "sampledFrameIndices": list(evidence.get("sampledFrameIndices", [])),
     }

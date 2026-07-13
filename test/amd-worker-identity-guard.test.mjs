@@ -97,6 +97,39 @@ print(json.dumps({'tokens': sorted(OcrToken('รักไทย 123', 0, 0, 10, 
   assert.ok(result.tokens.includes('123'))
 })
 
+test('detects product color-distribution drift independently of product position', { skip: skipReason }, () => {
+  const result = runIdentityGuard(`
+import json, sys
+sys.path.insert(0, 'amd-worker')
+from PIL import Image, ImageDraw
+from identity_guard import product_color_evidence
+
+source = Image.new('RGB', (320, 240), 'white')
+draw = ImageDraw.Draw(source)
+draw.rectangle((30, 40, 145, 210), fill=(35, 105, 190))
+draw.rectangle((175, 40, 290, 210), fill=(235, 185, 35))
+
+preserved = Image.new('RGB', (320, 240), 'white')
+draw = ImageDraw.Draw(preserved)
+draw.rectangle((42, 38, 157, 208), fill=(40, 110, 195))
+draw.rectangle((163, 38, 278, 208), fill=(230, 180, 38))
+
+drifted = Image.new('RGB', (320, 240), 'white')
+draw = ImageDraw.Draw(drifted)
+draw.rectangle((42, 38, 157, 208), fill=(20, 45, 55))
+draw.rectangle((163, 38, 278, 208), fill=(65, 38, 20))
+draw.ellipse((0, 120, 90, 260), fill=(220, 150, 120))
+
+print(json.dumps({
+  'preserved': product_color_evidence(source, [preserved], 0.20),
+  'drifted': product_color_evidence(source, [drifted], 0.20),
+}))
+`)
+  assert.equal(result.preserved.colorDistributionRequired, true)
+  assert.ok(result.preserved.colorDistributionMin >= 0.20)
+  assert.ok(result.drifted.colorDistributionMin < 0.20)
+})
+
 test('ships the identity guard helper through every AMD worker bootstrap path', () => {
   const dockerfile = readFileSync(path.join(repoRoot, 'amd-worker', 'Dockerfile'), 'utf8')
   const bootstrap = readFileSync(path.join(repoRoot, 'amd-worker', 'bootstrap.sh'), 'utf8')
@@ -136,6 +169,8 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /boundary_drift/)
   assert.match(pipeline, /identity_source = resize_contain\(source_image, width, height, trim_background=False\)/)
   assert.match(pipeline, /identity_evidence\(identity_source, frames/)
+  assert.match(pipeline, /product_color_distribution_drift/)
+  assert.match(pipeline, /product_color_evidence\(source, samples, COLOR_DISTRIBUTION_THRESHOLD\)/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\.get\("cinematicPrompt"/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\["cinematicPrompt"\]/)
   assert.match(app, /STORY_PIPELINE_TIMEOUT_SECONDS/)
@@ -289,7 +324,8 @@ source = open('amd-worker/run_story_pipeline.py', encoding='utf-8').read()
 tree = ast.parse(source)
 names = {
   'DEFAULT_IDENTITY_LOCKS', 'FAILURE_CODE_CLIP_SIMILARITY', 'FAILURE_CODE_OCR_RETENTION',
-  'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS',
+  'FAILURE_CODE_HUMAN_CONTAMINATION', 'FAILURE_CODE_COLOR_DISTRIBUTION',
+  'FAILURE_RETRY_INSTRUCTIONS', 'FAILURE_NEGATIVE_TERMS',
   'HUMAN_NEGATIVE_PATTERN', 'HUMAN_PROHIBITION_PATTERN', 'normalized_identity_locks',
   'retry_directives', 'apply_people_policy', 'evenly_spaced_frame_indices',
 }

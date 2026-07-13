@@ -12,6 +12,8 @@ OCR_CONFIDENCE_MIN = float(os.getenv("WAN_OCR_CONFIDENCE_MIN", "45"))
 PRODUCT_COMPONENT_MIN_AREA_RATIO = float(os.getenv("WAN_PRODUCT_COMPONENT_MIN_AREA_RATIO", "0.004"))
 PRODUCT_COMPONENT_MIN_BBOX_RATIO = float(os.getenv("WAN_PRODUCT_COMPONENT_MIN_BBOX_RATIO", "0.018"))
 PRODUCT_TOKEN_OVERLAP_MIN = float(os.getenv("WAN_PRODUCT_TOKEN_OVERLAP_MIN", "0.08"))
+PRODUCT_COLOR_MIN_CHROMATIC_RATIO = float(os.getenv("WAN_COLOR_MIN_CHROMATIC_RATIO", "0.015"))
+PRODUCT_COLOR_MIN_PIXELS = int(os.getenv("WAN_COLOR_MIN_PIXELS", "50"))
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,46 @@ def product_foreground_mask(image: Image.Image) -> np.ndarray:
     if not product_labels:
         return np.zeros(mask.shape, dtype=bool)
     return np.isin(labels, list(product_labels))
+
+
+def product_color_signature(image: Image.Image) -> tuple[np.ndarray | None, float]:
+    """Return a foreground HSV distribution that is insensitive to product position."""
+    rgb = image.convert("RGB")
+    foreground = product_foreground_mask(rgb)
+    hsv = np.asarray(rgb.convert("HSV"), dtype=np.uint8)
+    chromatic = foreground & (hsv[:, :, 1] >= 20) & (hsv[:, :, 2] >= 15)
+    chromatic_ratio = float(chromatic.mean())
+    values = hsv[chromatic]
+    minimum_pixels = max(PRODUCT_COLOR_MIN_PIXELS, round(hsv.shape[0] * hsv.shape[1] * PRODUCT_COLOR_MIN_CHROMATIC_RATIO))
+    if len(values) < minimum_pixels:
+        return None, chromatic_ratio
+    histogram, _ = np.histogramdd(
+        values,
+        bins=(18, 5, 5),
+        range=((0, 256), (0, 256), (0, 256)),
+    )
+    histogram = histogram.astype(np.float64)
+    histogram /= max(1.0, float(histogram.sum()))
+    return histogram, chromatic_ratio
+
+
+def product_color_evidence(source: Image.Image, samples: list[Image.Image], threshold: float = 0.20) -> dict:
+    source_signature, source_ratio = product_color_signature(source)
+    required = source_signature is not None
+    similarities: list[float] = []
+    if required:
+        for sample in samples:
+            sample_signature, _ = product_color_signature(sample)
+            similarity = 0.0 if sample_signature is None else float(np.minimum(source_signature, sample_signature).sum())
+            similarities.append(similarity)
+    minimum = min(similarities) if similarities else 1.0
+    return {
+        "colorDistributionMin": round(minimum, 4),
+        "colorDistributionSamples": [round(value, 4) for value in similarities],
+        "colorDistributionRequired": required,
+        "colorDistributionThreshold": float(threshold),
+        "sourceChromaticRatio": round(source_ratio, 4),
+    }
 
 
 def ocr_tokens_from_image(image: Image.Image) -> list[OcrToken]:

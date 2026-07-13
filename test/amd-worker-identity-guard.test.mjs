@@ -139,6 +139,7 @@ test('worker uses requested story output dimensions and short render shots', () 
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\.get\("cinematicPrompt"/)
   assert.match(pipeline, /shot\.get\("renderPrompt"\) or shot\["cinematicPrompt"\]/)
   assert.match(app, /STORY_PIPELINE_TIMEOUT_SECONDS/)
+  assert.match(app, /cinematicPrompt: str = Field\(min_length=1, max_length=12_000\)/)
   assert.doesNotMatch(app, /timeout=18 \* 60/)
 })
 

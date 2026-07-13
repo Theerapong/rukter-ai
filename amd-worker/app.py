@@ -106,7 +106,7 @@ class StoryShotRequest(BaseModel):
 
     id: str = Field(min_length=1, max_length=80)
     sourceUrl: HttpUrl
-    cinematicPrompt: str = Field(min_length=1, max_length=6000)
+    cinematicPrompt: str = Field(min_length=1, max_length=12_000)
     negativePrompt: str = Field(default="", max_length=6000)
     identityLocks: list[str] = Field(default_factory=list, max_length=16)
     allowPeople: bool = False

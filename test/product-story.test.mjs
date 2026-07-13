@@ -238,7 +238,7 @@ test('uses only evidence-supported directed shots without repeating a group-shot
   assert.deepEqual(plan.shots.map((shot) => shot.director.shotRole), ['locked_group_establish', 'locked_group_hero'])
   assert.ok(plan.shots.every((shot) => /Reference\/color lock: preserve supplied product\/set exactly/i.test(shot.renderPrompt)))
   assert.ok(plan.shots.every((shot) => /exact source hue\/saturation/i.test(shot.renderPrompt)))
-  assert.ok(plan.shots.every((shot) => /Group lock: all items inside frame; preserve source spacing\/overlap\/clearance/i.test(shot.renderPrompt)))
+  assert.ok(plan.shots.every((shot) => /Group lock: all items ≥6% edge-clear; preserve source spacing\/overlap\/clearance/i.test(shot.renderPrompt)))
   assert.ok(plan.shots.every((shot) => shot.director.requestedCameraPreset !== 'Arc' || shot.director.cameraSafety === 'arc_disabled_without_structured_view_evidence'))
   assert.ok(plan.shots.every((shot) => !shot.renderPrompt.includes('unsupported_extra')))
 })

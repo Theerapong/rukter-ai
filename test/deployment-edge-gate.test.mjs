@@ -449,8 +449,12 @@ test('Cloudflare lifecycle keeps the owned gate first, preserves unrelated rules
 
   const statusResult = await run('status', ctx.env)
   assert.equal(statusResult.code, 0, statusResult.stderr)
+  const callsBeforeRenew = ctx.mock.calls.length
   const renew = await run('renew', ctx.env)
   assert.equal(renew.code, 0, renew.stderr)
+  const renewPatchCall = ctx.mock.calls.slice(callsBeforeRenew).find((call) => call.method === 'PATCH' && call.url.endsWith(`/${state.rule_id}`))
+  assert.ok(renewPatchCall)
+  assert.equal('position' in JSON.parse(renewPatchCall.body), false)
   const renewedState = JSON.parse(await readFile(ctx.stateFile, 'utf8'))
   assert.equal(renewedState.rule_id, state.rule_id)
   assert.ok(renewedState.expires_epoch >= state.expires_epoch)
@@ -574,7 +578,9 @@ test('same-owner acquisition recovers and renews an existing gate without state'
   assert.equal(state.rule_id, existing.id)
   assert.equal(ctx.mock.ruleset.rules[0].id, existing.id)
   assert.equal(ctx.mock.calls.some((call) => call.method === 'POST' && call.url.endsWith('/rules')), false)
-  assert.ok(ctx.mock.calls.some((call) => call.method === 'PATCH' && call.url.endsWith(`/${existing.id}`)))
+  const recoverPatchCall = ctx.mock.calls.find((call) => call.method === 'PATCH' && call.url.endsWith(`/${existing.id}`))
+  assert.ok(recoverPatchCall)
+  assert.equal(JSON.parse(recoverPatchCall.body).position.index, 1)
   assert.ok(ctx.mock.ruleset.rules.some((rule) => rule.ref === 'merchant_unrelated_rule'))
   assert.equal((await run('release', ctx.env)).code, 0)
 })

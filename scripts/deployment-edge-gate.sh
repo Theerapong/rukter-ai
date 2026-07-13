@@ -525,18 +525,21 @@ delete_rule() {
 reconcile_gate_rules() {
   local zone_id="$1"
   local ruleset_id="$2"
-  local ruleset_json rule_json rule_id ref now owned_count foreign_owners expired_rule_id
+  local ruleset_json rule_json rule_id ref now owned_count foreign_owners expired_rule_id rule_index
   local -a expired_rule_ids
   while true; do
     RECONCILED_RULE_ID=""
     RECONCILED_RULE_EXPIRES=""
+    RECONCILED_RULE_INDEX=""
     now="$(date +%s)"
     ruleset_json="$(fetch_ruleset "${zone_id}" "${ruleset_id}")"
     expired_rule_ids=()
     owned_count=0
     foreign_owners=""
+    rule_index=0
     while IFS= read -r encoded_rule; do
       [[ -n "${encoded_rule}" ]] || continue
+      rule_index=$(( rule_index + 1 ))
       rule_json="$(jq -rn --arg value "${encoded_rule}" '$value | @base64d')"
       ref="$(jq -r '.ref // ""' <<<"${rule_json}")"
       [[ "${ref}" == "${rule_ref_prefix}"* ]] || continue
@@ -562,6 +565,7 @@ reconcile_gate_rules() {
         owned_count=$(( owned_count + 1 ))
         RECONCILED_RULE_ID="${rule_id}"
         RECONCILED_RULE_EXPIRES="${PARSED_RULE_EXPIRES}"
+        RECONCILED_RULE_INDEX="${rule_index}"
       else
         foreign_owners="${foreign_owners}${foreign_owners:+,}${PARSED_RULE_OWNER}"
       fi
@@ -591,6 +595,7 @@ mutate_rule() {
   local rule_id="$4"
   local owner="$5"
   local expires_epoch="$6"
+  local move_to_first="${7:-true}"
   local response_file http_code body path
   response_file="$(mktemp)"
   body="$(rule_definition "${owner}" "${expires_epoch}")"
@@ -598,6 +603,9 @@ mutate_rule() {
     path="/zones/${zone_id}/rulesets/${ruleset_id}/rules"
   else
     path="/zones/${zone_id}/rulesets/${ruleset_id}/rules/${rule_id}"
+    if [[ "${move_to_first}" != "true" || "${RECONCILED_RULE_INDEX:-}" == "1" ]]; then
+      body="$(jq -c 'del(.position)' <<<"${body}")"
+    fi
   fi
   http_code="$(cloudflare_request "${method}" "${path}" "${response_file}" "${body}")"
   if [[ "${http_code}" != "200" && "${http_code}" != "201" ]]; then
@@ -798,7 +806,7 @@ renew_gate() {
     exit 1
   }
   expires_epoch=$(( $(date +%s) + ttl_seconds ))
-  mutate_rule PATCH "${zone_id}" "${ruleset_id}" "${state_rule_id}" "${state_owner}" "${expires_epoch}"
+  mutate_rule PATCH "${zone_id}" "${ruleset_id}" "${state_rule_id}" "${state_owner}" "${expires_epoch}" false
   verify_api_gate "${zone_id}" "${ruleset_id}" "${state_rule_id}" "${state_owner}" "${expires_epoch}"
   write_state "${state_owner}" "${zone_id}" "${ruleset_id}" "${state_rule_id}" "${expires_epoch}"
   verify_edge_gate_present "${state_header_key}" "${state_header_value}"

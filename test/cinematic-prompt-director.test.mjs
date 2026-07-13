@@ -32,6 +32,7 @@ test('compiles a short reference-locked I2V motion prompt', () => {
   assert.match(result.prompt, /Camera: Crane Up, one smooth constant-speed move/)
   assert.match(result.prompt, /Stage: dark neutral studio/)
   assert.match(result.prompt, /background reflection and visible material highlight/)
+  assert.match(result.prompt, /Background lock: empty and prop-free; nothing enters frame/)
   assert.match(result.prompt, /Product-only frame/)
   assert.doesNotMatch(result.prompt, /then orbit, then zoom/)
 })

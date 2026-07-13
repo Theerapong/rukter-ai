@@ -130,3 +130,11 @@ test('does not let a negated Product DNA affordance erase an affirmative scene c
   assert.match(result.prompt, /background reflection and visible material highlight/)
   assert.doesNotMatch(result.prompt, /flex|articulation/)
 })
+
+test('turns shadow-led texture direction into hue-preserving neutral light', () => {
+  const result = compileProductRenderPrompt({
+    lightingTransition: 'Shadow direction shifts across the ribbed surface as contrast increases.',
+  })
+  assert.match(result.prompt, /neutral luminance-only grazing light reveals texture without changing product hue/)
+  assert.doesNotMatch(result.prompt, /low-key contrast/)
+})

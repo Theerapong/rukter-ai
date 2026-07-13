@@ -51,7 +51,7 @@ test('keeps single-view camera motion on the visible face and preserves full fra
   assert.equal(result.requestedCameraPreset, 'Arc')
   assert.equal(result.cameraPreset, 'Dolly In')
   assert.match(result.prompt, /Single-view: stay on the visible face/)
-  assert.match(result.prompt, /Group framing: keep every item fully visible throughout/)
+  assert.match(result.prompt, /Group lock: all items inside frame; preserve source spacing\/overlap\/clearance/)
   assert.match(result.prompt, /Stage: clean neutral product studio/)
   assert.match(result.prompt, /background color temperature shifts once/)
   assert.match(result.prompt, /key-light temperature shift/)
@@ -92,6 +92,7 @@ test('does not invert negated or stable stage and temperature directions', () =>
     preserveFullGroup: false,
   })
   assert.doesNotMatch(singleProduct.prompt, /Group framing/)
+  assert.doesNotMatch(singleProduct.prompt, /Group lock|spacing\/overlap\/clearance/)
   assert.match(singleProduct.prompt, /complete hero frame/)
 })
 

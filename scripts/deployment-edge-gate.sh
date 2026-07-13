@@ -298,6 +298,8 @@ cloudflare_request() {
   local body="${4:-}"
   local header_file curl_status
   local args=(
+    --connect-timeout 5
+    --max-time 30
     -sS
     -o "${output_file}"
     -w '%{http_code}'
@@ -646,7 +648,7 @@ edge_request() {
   local header_key="${4:-}"
   local header_value="${5:-}"
   local header_file curl_status
-  local args=(--path-as-is -sS -o "${output_file}" -w '%{http_code}' -X "${method}")
+  local args=(--path-as-is --connect-timeout 5 --max-time 20 -sS -o "${output_file}" -w '%{http_code}' -X "${method}")
   header_file="$(mktemp "${TMPDIR:-/tmp}/rukter-edge-headers.XXXXXX")"
   chmod 600 "${header_file}"
   {
@@ -703,7 +705,7 @@ verify_edge_gate_present() {
       && [[ "${amd_source_code}" == "200" ]] \
       && [[ "${amd_unknown_code}" == "403" ]] \
       && [[ "${upload_code}" == "401" ]] \
-      && [[ "${presence_code}" == "401" || "${presence_code}" == "404" ]] \
+      && [[ "${presence_code}" == "401" || "${presence_code}" == "404" || "${presence_code}" == "405" ]] \
       && [[ "${presence_get_code}" == "403" ]] \
       && [[ "${traversal_plain_code}" == "403" ]] \
       && [[ "${traversal_encoded_dots_code}" == "403" ]] \

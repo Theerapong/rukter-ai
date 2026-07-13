@@ -313,8 +313,18 @@ async function startCloudflareMock(t, options = {}) {
       sendJson(res, 401, { error: 'worker token required' })
       return
     }
-    if (!options.legacyPresenceRoute && req.method === 'POST' && url.pathname === '/api/story-presence') {
-      sendJson(res, 401, { error: 'story session required' })
+    if (req.method === 'POST' && url.pathname === '/api/story-presence') {
+      if (options.presencePostStatus) {
+        sendJson(res, options.presencePostStatus, { error: 'story presence unavailable' })
+        return
+      }
+      if (!options.legacyPresenceRoute) {
+        sendJson(res, 401, { error: 'story session required' })
+        return
+      }
+    }
+    if (req.method === 'GET' && url.pathname === '/api/story-presence' && options.presenceGetStatus) {
+      sendJson(res, options.presenceGetStatus, { error: 'story presence unavailable' })
       return
     }
     sendJson(res, 404, { error: 'not found' })
@@ -652,6 +662,16 @@ test('legacy bootstrap accepts a 404 presence probe while GET remains blocked', 
   const acquired = await run('acquire', ctx.env)
   assert.equal(acquired.code, 0, acquired.stderr)
   assert.equal(await httpStatus(`${ctx.mock.url}/api/story-presence`, { method: 'POST' }), 404)
+  assert.equal(await httpStatus(`${ctx.mock.url}/api/story-presence`), 403)
+  assert.equal((await run('status', ctx.env)).code, 0)
+  assert.equal((await run('release', ctx.env)).code, 0)
+})
+
+test('legacy bootstrap accepts a 405 presence probe while GET remains blocked', async (t) => {
+  const ctx = await setup(t, { presencePostStatus: 405 })
+  const acquired = await run('acquire', ctx.env)
+  assert.equal(acquired.code, 0, acquired.stderr)
+  assert.equal(await httpStatus(`${ctx.mock.url}/api/story-presence`, { method: 'POST' }), 405)
   assert.equal(await httpStatus(`${ctx.mock.url}/api/story-presence`), 403)
   assert.equal((await run('status', ctx.env)).code, 0)
   assert.equal((await run('release', ctx.env)).code, 0)
